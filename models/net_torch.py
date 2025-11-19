@@ -5,6 +5,35 @@ from collections import OrderedDict
 
 import numpy as np
 
+class NetworkBasic(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+    
+    def load_CKPT(self, sCKPT: str, device: torch.device):
+        checkpoint = torch.load(sCKPT, map_location=device)
+        print("Checkpoint类型:", type(checkpoint))
+        print("Checkpoint键:", checkpoint.keys() if isinstance(checkpoint, dict) else "不是字典") 
+
+        # 获取状态字典
+        if isinstance(checkpoint, dict):
+            if 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            else:
+                state_dict = checkpoint
+        else:
+            state_dict = checkpoint.state_dict()
+
+        # 打印模型和状态字典的键进行比较
+        # print("模型键:", self.state_dict().keys())
+        # print("状态字典键:", state_dict.keys())
+
+        assert set(self.state_dict().keys()) == set(state_dict.keys()), "模型键与状态字典键不匹配"
+        self.load_state_dict(state_dict)
+        print(f"Loaded model weights from {sCKPT}.")
+
+        return
+    
 
 def Conv2D(
         in_channels: int, out_channels: int,
@@ -122,8 +151,7 @@ class DecoderStage(nn.Module):
         y = self.proj_conv(skip)
         return x + y
 
-
-class Network(nn.Module):
+class NetworkPMRID(NetworkBasic):
 
     def __init__(self):
         super().__init__()
@@ -163,14 +191,14 @@ class Network(nn.Module):
 
         pred = inp + x
         return pred
-
+    
 
 if __name__ == "__main__":
-    net = Network()
+    net = NetworkPMRID()
     # img = mge.tensor(np.random.randn(1, 4, 64, 64).astype(np.float32))
     img = torch.randn(1, 4, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
     out = net(img)
 
-    import IPython; IPython.embed()
+    # import IPython; IPython.embed()
 
 # vim: ts=4 sw=4 sts=4 expandtab

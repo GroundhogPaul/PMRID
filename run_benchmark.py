@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 import argparse
-import pickle
 from pathlib import Path
 from typing import Tuple
 
 import cv2
-import megengine as mge
 import numpy as np
 import skimage.metrics
 from tqdm import tqdm
 
-from models.net_mge import Network
+import torch
+from models.net_torch import NetworkPMRID as Network
 from utils import RawUtils
 from benchmark import BenchmarkLoader, RawMeta
 
@@ -44,9 +43,7 @@ class Denoiser:
 
     def __init__(self, model_path: Path, ksigma: KSigma, inp_scale=256.0):
         net = Network()
-        with model_path.open('rb') as f:
-            states = pickle.load(f)
-        net.load_state_dict(states)
+        net.load_CKPT(str(model_path), device=torch.device('cpu'))
         net.eval()
 
         self.net = net
@@ -69,10 +66,12 @@ class Denoiser:
         inp_rggb = self.ksigma(inp_rggb_01, iso) * self.inp_scale
 
         inp = np.ascontiguousarray(inp_rggb)
-        pred = self.net(inp)[0] / self.inp_scale
+        input_tensor = torch.from_numpy(inp).float()
+        pred = self.net(input_tensor)[0] / self.inp_scale
 
         # import ipdb; ipdb.set_trace()
-        pred = pred.numpy().transpose(1, 2, 0)
+        pred = pred.detach().cpu().numpy()
+        pred = pred.transpose(1, 2, 0)
         pred = self.ksigma(pred, iso, inverse=True)
 
         ph, pw = self.ph, self.pw
@@ -98,6 +97,7 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
         input_bayer, gt_bayer = RawUtils.bggr2rggb(input_bayer, gt_bayer)
 
         pred_bayer = denoiser.run(input_bayer, iso=meta.ISO)
+        # pred_bayer = input_bayer  # dummy for test
 
         inp_rgb, pred_rgb, gt_rgb = RawUtils.bayer2rgb(
             input_bayer, pred_bayer, gt_bayer,
@@ -105,6 +105,9 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
         )
         inp_rgb, pred_rgb, gt_rgb = RawUtils.bggr2rggb(inp_rgb, pred_rgb, gt_rgb)
         bar.set_description(meta.name+' ✓')
+        assert cv2.imwrite("inp_rgb.png", (inp_rgb*255.0).astype(np.uint8))
+        assert cv2.imwrite("pred_rgb.png", (pred_rgb*255.0).astype(np.uint8))
+        assert cv2.imwrite("gt_rgb.png", (gt_rgb*255.0).astype(np.uint8))
 
         psnrs = []
         ssims = []
@@ -114,34 +117,33 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
             gt_patch = gt_rgb[y0:y1, x0:x1]
 
             psnr = skimage.metrics.peak_signal_noise_ratio(gt_patch, pred_patch)
-            ssim = skimage.metrics.structural_similarity(gt_patch, pred_patch, multichannel=True)
+            # ssim = skimage.metrics.structural_similarity(gt_patch, pred_patch, multichannel=True)
             psnrs.append(float(psnr))
-            ssims.append(float(ssim))
+            # ssims.append(float(ssim))
 
         bar.set_description(meta.name+' ✓✓')
 
         PSNRs = PSNRs + psnrs   # list append
-        SSIMs = SSIMs + ssims
+        # SSIMs = SSIMs + ssims
+        break
 
     mean_psnr = np.mean(PSNRs)
-    mean_ssim = np.mean(SSIMs)
+    # mean_ssim = np.mean(SSIMs)
     print("mean PSNR:", mean_psnr)
-    print("mean SSIM:", mean_ssim)
+    # print("mean SSIM:", mean_ssim)
 
 
-def main():
-
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('model', type=Path)
+    parser.add_argument('--model', type=Path)
     parser.add_argument('--benchmark', type=Path)
 
     args = parser.parse_args()
 
+    # args.benchmark = Path("D:/users/xiaoyaopan/PxyAI/DataSet/PMRID/PMRID/benchmark.json")
+    # args.model = Path("D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/models/torch_pretrained.ckp")
+
     bm_loader = BenchmarkLoader(args.benchmark.resolve())
     run_benchmark(args.model, bm_loader)
-
-
-if __name__ == "__main__":
-    main()
 
 # vim: ts=4 sw=4 sts=4 expandtab

@@ -1,0 +1,28 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "run_benchmark.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/run_benchmark.py",
+            "console": "integratedTerminal",
+            "args": [
+                    "--benchmark", "D:/users/xiaoyaopan/PxyAI/DataSet/PMRID/PMRID/benchmark.json",
+                    "--model", "D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/models/torch_pretrained.ckp"
+                    ],
+            "justMyCode": false
+        } 
+    ]
+}
