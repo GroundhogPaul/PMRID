@@ -12,6 +12,9 @@ class RawUtils:
         # when input shape is a RGGB [H, W, 4], the bayer[::-1, ::-1] is to swap the channels
         res = []
         for bayer in bayers:
+            assert bayer.ndim in [2, 3], "Input must be 2D or 3D array"
+            if bayer.ndim == 3:
+                assert bayer.shape[2] in [3, 4], "3 channels for RGB image, 4 channels for RGGB format"
             res.append(bayer[::-1, ::-1])
         if len(res) == 1:
             return res[0]
@@ -27,6 +30,7 @@ class RawUtils:
         # Convert Bayer pattern [H, W] to RGGB format [H/2, W/2, 4]
         res = []
         for bayer in bayers:
+            assert bayer.ndim == 2, "Input must be 2D array"
             H, W = bayer.shape
             res.append(
                 bayer.reshape(H//2, 2, W//2, 2)
@@ -42,6 +46,8 @@ class RawUtils:
         # Convert RGGB format [H, W, 4] to Bayer pattern [H*2, W*2]
         res = []
         for rggb in rggbs:
+            assert rggb.ndim == 3, "Input must be 3D array"
+            assert rggb.shape[2] == 4, "Input must have 4 channels in the last dimension"
             H, W, _ = rggb.shape
             res.append(
                 rggb.reshape(H, W, 2, 2)
@@ -60,6 +66,7 @@ class RawUtils:
         wb_gain = np.array(wb_gain)[[0, 1, 1, 2]]
         res = []
         for bayer_01 in bayer_01s:
+            assert bayer_01.ndim == 2, "Input must be 2D array"
             bayer = cls.rggb2bayer(
                 (cls.bayer2rggb(bayer_01) * wb_gain).clip(0, 1)
             ).astype(np.float32)
