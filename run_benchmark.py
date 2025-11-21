@@ -63,7 +63,8 @@ class Denoiser:
 
     def run(self, bayer_01: np.ndarray, iso: float):
         inp_rggb_01 = self.pre_process(bayer_01)
-        inp_rggb = self.ksigma(inp_rggb_01, iso) * self.inp_scale
+        inp_rggb_ksigma = self.ksigma(inp_rggb_01, iso)
+        inp_rggb = inp_rggb_ksigma * self.inp_scale
 
         inp = np.ascontiguousarray(inp_rggb)
         input_tensor = torch.from_numpy(inp).float()
@@ -99,7 +100,7 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
         pred_bayer = denoiser.run(input_bayer, iso=meta.ISO)
         # pred_bayer = input_bayer  # dummy for test
 
-        inp_rgb, pred_rgb, gt_rgb = RawUtils.bayer2rgb(
+        inp_rgb, pred_rgb, gt_rgb = RawUtils.bayer01_2_rgb01(
             input_bayer, pred_bayer, gt_bayer,
             wb_gain=meta.wb_gain, CCM=meta.CCM,
         )
@@ -122,10 +123,10 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
             # ssims.append(float(ssim))
 
         bar.set_description(meta.name+' ✓✓')
+        print("current PSNR:", np.mean(PSNRs))
 
         PSNRs = PSNRs + psnrs   # list append
         # SSIMs = SSIMs + ssims
-        break
 
     mean_psnr = np.mean(PSNRs)
     # mean_ssim = np.mean(SSIMs)

@@ -7,6 +7,9 @@ class RawUtils:
 
     @classmethod
     def bggr2rggb(cls, *bayers):
+        # when input shape is a RGB [H, W, 3], the bayer[::-1, ::-1] is to swap the channels
+        # when input shape is a bayer [H, W], the bayer[::-1, ::-1] is to rotate the image 180 degrees     
+        # when input shape is a RGGB [H, W, 4], the bayer[::-1, ::-1] is to swap the channels
         res = []
         for bayer in bayers:
             res.append(bayer[::-1, ::-1])
@@ -16,10 +19,12 @@ class RawUtils:
 
     @classmethod
     def rggb2bggr(cls, *bayers):
+        # see bggr2rggb
         return cls.bggr2rggb(*bayers)
 
     @classmethod
     def bayer2rggb(cls, *bayers):
+        # Convert Bayer pattern [H, W] to RGGB format [H/2, W/2, 4]
         res = []
         for bayer in bayers:
             H, W = bayer.shape
@@ -34,6 +39,7 @@ class RawUtils:
 
     @classmethod
     def rggb2bayer(cls, *rggbs):
+        # Convert RGGB format [H, W, 4] to Bayer pattern [H*2, W*2]
         res = []
         for rggb in rggbs:
             H, W, _ = rggb.shape
@@ -48,7 +54,8 @@ class RawUtils:
         return res
 
     @classmethod
-    def bayer2rgb(cls, *bayer_01s, wb_gain, CCM, gamma=2.2):
+    def bayer01_2_rgb01(cls, *bayer_01s, wb_gain, CCM, gamma=2.2):
+        # Convert Bayer pattern [H, W] to RGB format [H/2, W/2, 3]
 
         wb_gain = np.array(wb_gain)[[0, 1, 1, 2]]
         res = []
