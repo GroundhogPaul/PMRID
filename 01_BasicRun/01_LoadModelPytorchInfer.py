@@ -1,4 +1,4 @@
-import utilBasicRunDet
+import utilBasicRun
 from models.net_torch import *
 
 model = NetworkPMRID()
