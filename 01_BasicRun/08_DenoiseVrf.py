@@ -1,10 +1,10 @@
-import utilBasicRunDet
+import utilBasicRun
 from models.net_torch import *
 
 import numpy as np
 import os
 import cv2
-from utils import RawUtils
+from utilRaw import RawUtils
 from utilVrf import read_vrf, save_vrf_image, save_raw_image
 
 # ---------- read vrf ---------- #
@@ -23,7 +23,7 @@ dgain = 1.0
 
 bayer01_GRBG_noisy = read_vrf(sVrfPath, W, H, black_level, dgain, white_level)
 bayer01_RGGB_noisy = np.fliplr(bayer01_GRBG_noisy)
-bayer01_BGGR_noisy = np.flipud(bayer01_GRBG_noisy)
+bayer01_BGGR_noisy = RawUtils.rggb2bggr(bayer01_RGGB_noisy)
 
 rgb01_noisy = RawUtils.bayer01_2_rgb01(bayer01_BGGR_noisy, wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3))
 cv2.imwrite("noisy_rgb.png", (rgb01_noisy*255.0).astype(np.uint8))
@@ -105,11 +105,15 @@ bayer01_RGGB_denoise = Denoiser.run(bayer01_RGGB_noisy, iso=1600.0)
 # ----- save png ----- #
 bayer01_BGGR_denoise = RawUtils.rggb2bggr(bayer01_RGGB_denoise)
 
-bgr_denoise = RawUtils.bayer01_2_rgb01(bayer01_BGGR_denoise, wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3))
-cv2.imwrite("denoise_rgb.png", (bgr_denoise*255.0).astype(np.uint8))
+bgr01_denoise = RawUtils.bayer01_2_rgb01(bayer01_BGGR_denoise, wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3))
+bgr_denoise = (bgr01_denoise*255.0).astype(np.uint8)
+cv2.imwrite("denoise_rgb.bmp", bgr_denoise)
+
+bgr_denoise_std = cv2.imread("denoise_rgb_std.bmp")
+errNorm2 = np.linalg.norm(bgr_denoise.astype(np.float32) - bgr_denoise_std.astype(np.float32))
+print(errNorm2)
 
 # ----- save vrf ----- #
-
 out_ratio = 4  #out 12bit
 out_black_level = black_level * out_ratio  # 根据实际情况调整
 out_white_level = (white_level + 1) * out_ratio - 1
