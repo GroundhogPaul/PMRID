@@ -11,7 +11,8 @@ from utilVrf import read_vrf, save_vrf_image, save_raw_image
 # ----- assert paths ----- #
 sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
 assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-sVrfFile = "53/0_unpacked.vrf"
+# sVrfFile = "53/0_unpacked.vrf"
+sVrfFile = "33/5_unpacked.vrf"
 sVrfPath = os.path.join(sFolder, sVrfFile)
 assert os.path.exists(sVrfPath), f"VRF file does not exist: {sVrfPath}"
 
@@ -25,8 +26,9 @@ bayer01_GRBG_noisy = read_vrf(sVrfPath, W, H, black_level, dgain, white_level)
 bayer01_RGGB_noisy = np.fliplr(bayer01_GRBG_noisy)
 bayer01_BGGR_noisy = RawUtils.rggb2bggr(bayer01_RGGB_noisy)
 
-rgb01_noisy = RawUtils.bayer01_2_rgb01(bayer01_BGGR_noisy, wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3))
-cv2.imwrite("noisy_rgb.png", (rgb01_noisy*255.0).astype(np.uint8))
+bgr01_noisy = RawUtils.bayer01_2_rgb01(bayer01_BGGR_noisy, wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3))
+bgr_noisy = (bgr01_noisy*255.0).astype(np.uint8)
+cv2.imwrite("noisy_rgb.png", bgr_noisy)
 
 # ---------- Denoise ---------- #
 class KSigmaCur:
@@ -80,6 +82,7 @@ class Denoiser:
         inp_rggb_01 = self.pre_process(bayer_01)
         inp_rggb_ksigma = self.ksigma(inp_rggb_01, iso)
         inp_rggb = inp_rggb_ksigma * self.inp_scale
+        print("inp_rggb: ", inp_rggb.min(), inp_rggb.max())
 
         inp = np.ascontiguousarray(inp_rggb)
         input_tensor = torch.from_numpy(inp).float()
@@ -100,6 +103,8 @@ model_path =  "D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/models/torch_pretr
 Denoiser = Denoiser(model_path, kSigma)
 
 bayer01_RGGB_denoise = Denoiser.run(bayer01_RGGB_noisy, iso=1600.0)
+bayer01_RGGB_denoise = np.clip(bayer01_RGGB_denoise, 0.0, 1.0)
+import skimage
 
 # ---------- save image ---------- #
 # ----- save png ----- #
@@ -109,9 +114,17 @@ bgr01_denoise = RawUtils.bayer01_2_rgb01(bayer01_BGGR_denoise, wb_gain=[1.5156, 
 bgr_denoise = (bgr01_denoise*255.0).astype(np.uint8)
 cv2.imwrite("denoise_rgb.bmp", bgr_denoise)
 
+import skimage
+psnr = skimage.metrics.peak_signal_noise_ratio(bgr_denoise, bgr_noisy)
+print("psnr_bgr = ", psnr)
+print(bayer01_RGGB_denoise.min(), bayer01_RGGB_denoise.max())
+print(bayer01_RGGB_noisy.min(), bayer01_RGGB_noisy.max())
+psnr = skimage.metrics.peak_signal_noise_ratio(bayer01_RGGB_denoise, bayer01_RGGB_noisy) 
+print("psnr_bayer01 = ", psnr)
+
 bgr_denoise_std = cv2.imread("denoise_rgb_std.bmp")
 errNorm2 = np.linalg.norm(bgr_denoise.astype(np.float32) - bgr_denoise_std.astype(np.float32))
-print(errNorm2)
+# print(errNorm2)
 
 # ----- save vrf ----- #
 out_ratio = 4  #out 12bit

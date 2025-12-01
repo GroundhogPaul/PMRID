@@ -1,2 +1,8 @@
 *.pyc
 *~
+*.ARW
+*.raw
+*.vrf
+*.bmp
+*.png
+*.jpg
