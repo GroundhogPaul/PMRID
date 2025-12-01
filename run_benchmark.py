@@ -10,7 +10,8 @@ from tqdm import tqdm
 
 import torch
 from models.net_torch import NetworkPMRID as Network
-from utils import RawUtils
+import utilBasic
+from utilRaw import RawUtils
 from benchmark import BenchmarkLoader, RawMeta
 
 
@@ -21,7 +22,7 @@ class KSigma:
         self.Sigma = np.poly1d(B_coeff)
         self.anchor = anchor
         self.V = V
-
+    
     def __call__(self, img_01, iso: float, inverse=False):
         k, sigma = self.K(iso), self.Sigma(iso)
         k_a, sigma_a = self.K(self.anchor), self.Sigma(self.anchor)
@@ -38,7 +39,11 @@ class KSigma:
 
         return img / self.V
 
+    def GetKSigma(self, iso: float):
+        k = self.K(iso)
+        Sigma = self.Sigma(iso)
 
+        return k, Sigma
 class Denoiser:
 
     def __init__(self, model_path: Path, ksigma: KSigma, inp_scale=256.0):
@@ -89,7 +94,9 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
     )
     denoiser = Denoiser(model_path, ksigma)
 
-    PSNRs, SSIMs = [], []
+    PSNRs_rgb_denoise, SSIMs_rgb = [], []
+    PSNRs_bayer_denoise, SSIMs_bayer_denoise = [], []
+    PSNRs_bayer_noisy, SSIMs_bayer_noisy = [], []
 
     bar = tqdm(bm_loader)
     for input_bayer, gt_bayer, meta in bar:
@@ -104,31 +111,55 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
             input_bayer, pred_bayer, gt_bayer,
             wb_gain=meta.wb_gain, CCM=meta.CCM,
         )
+
         inp_rgb, pred_rgb, gt_rgb = RawUtils.bggr2rggb(inp_rgb, pred_rgb, gt_rgb)
         bar.set_description(meta.name+' ✓')
         assert cv2.imwrite("inp_rgb.png", (inp_rgb*255.0).astype(np.uint8))
         assert cv2.imwrite("pred_rgb.png", (pred_rgb*255.0).astype(np.uint8))
         assert cv2.imwrite("gt_rgb.png", (gt_rgb*255.0).astype(np.uint8))
 
-        psnrs = []
-        ssims = []
+        psnrs_rgb_denoise, ssims_rgb_denoise = [], []
+        psnrs_rgb_noisy, ssims_rgb_noisy = [], []
+        psnrs_bayer_denoise, ssims_bayer_denoise = [], []
+        psnrs_bayer_noisy, ssims_bayer_noisy = [], []
 
         for x0, y0, x1, y1 in meta.ROIs:
-            pred_patch = pred_rgb[y0:y1, x0:x1]
-            gt_patch = gt_rgb[y0:y1, x0:x1]
+            # ----- raw ----- #
+            pred_patch_bayer = pred_bayer[y0:y1, x0:x1]
+            gt_patch_bayer = gt_bayer[y0:y1, x0:x1]
+            noisy_patch_bayer = input_bayer[y0:y1, x0:x1]
 
-            psnr = skimage.metrics.peak_signal_noise_ratio(gt_patch, pred_patch)
+            psnr_bayer_denoise = skimage.metrics.peak_signal_noise_ratio(gt_patch_bayer, pred_patch_bayer)
+            psnrs_bayer_denoise.append(float(psnr_bayer_denoise))
+            psnr_bayer_noisy = skimage.metrics.peak_signal_noise_ratio(gt_patch_bayer, noisy_patch_bayer)
+            psnrs_bayer_noisy.append(float(psnr_bayer_noisy))
+            # ssim_bayer = skimage.metrics.structural_similarity(gt_patch_bayer, pred_patch_bayer, multichannel=True)
+            # ssims_bayer.append(float(ssim))
+
+            # ----- rgb ----- #
+            pred_patch_rgb = pred_rgb[y0:y1, x0:x1]
+            gt_patch_rgb = gt_rgb[y0:y1, x0:x1]
+            noisy_patch_rgb = inp_rgb[y0:y1, x0:x1]
+
+            psnr_rgb_denoise = skimage.metrics.peak_signal_noise_ratio(gt_patch_rgb, pred_patch_rgb)
+            psnrs_rgb_denoise.append(float(psnr_rgb_denoise))
+            psnr_rgb_noisy = skimage.metrics.peak_signal_noise_ratio(gt_patch_rgb, noisy_patch_rgb)
+            psnrs_rgb_noisy.append(float(psnr_rgb_noisy))
             # ssim = skimage.metrics.structural_similarity(gt_patch, pred_patch, multichannel=True)
-            psnrs.append(float(psnr))
             # ssims.append(float(ssim))
 
         bar.set_description(meta.name+' ✓✓')
-        print("current PSNR:", np.mean(PSNRs))
+        print("ISO = ", meta.ISO)
+        print("current psnrs_bayer (gt to denoise) = ", np.mean(psnrs_bayer_denoise))
+        print("current psnrs_bayer (gt to noisy) = ", np.mean(psnrs_bayer_noisy))
+        print("current psnrs_rgb (gt to denoise) = ", np.mean(psnrs_rgb_denoise)) 
+        print("current psnrs_rgb (gt to noisy) = ", np.mean(psnrs_rgb_noisy)) 
 
-        PSNRs = PSNRs + psnrs   # list append
+        PSNRs_rgb_denoise = PSNRs_rgb_denoise + psnrs_rgb_denoise   # list append
         # SSIMs = SSIMs + ssims
+        PSNRs_bayer_denoise = PSNRs_bayer_denoise + psnrs_bayer_denoise   # list append
 
-    mean_psnr = np.mean(PSNRs)
+    mean_psnr = np.mean(PSNRs_rgb_denoise)
     # mean_ssim = np.mean(SSIMs)
     print("mean PSNR:", mean_psnr)
     # print("mean SSIM:", mean_ssim)
