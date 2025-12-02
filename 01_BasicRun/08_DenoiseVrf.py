@@ -1,18 +1,19 @@
 import utilBasicRun
-from models.net_torch import *
 
 import numpy as np
+import skimage
 import os
 import cv2
 from utilRaw import RawUtils
+from run_benchmark import KSigma, Denoiser
 from utilVrf import read_vrf, save_vrf_image, save_raw_image
 
 # ---------- read vrf ---------- #
 # ----- assert paths ----- #
 sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
 assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-# sVrfFile = "53/0_unpacked.vrf"
-sVrfFile = "33/5_unpacked.vrf"
+sVrfFile = "53/0_unpacked.vrf"
+# sVrfFile = "33/5_unpacked.vrf"
 sVrfPath = os.path.join(sFolder, sVrfFile)
 assert os.path.exists(sVrfPath), f"VRF file does not exist: {sVrfPath}"
 
@@ -31,80 +32,17 @@ bgr_noisy = (bgr01_noisy*255.0).astype(np.uint8)
 cv2.imwrite("noisy_rgb.png", bgr_noisy)
 
 # ---------- Denoise ---------- #
-class KSigmaCur:
-
-    def __init__(self, V: float = 959.0):
-        self.V = V
-
-    def __call__(self, img_01, iso: float, inverse=False):
-        k, sigma = 3.84565949, 33.43866601  # this should be calculate from again and calib,
-        # but we just use fixed value here for simplicity
-
-        k_a, sigma_a = 0.96793133, 2.97945289
-
-        cvt_k = k_a / k
-        cvt_b = (sigma / (k ** 2) - sigma_a / (k_a ** 2)) * k_a
-
-        img = img_01 * self.V
-
-        if not inverse:
-            img = img * cvt_k + cvt_b
-        else:
-            img = (img - cvt_b) / cvt_k
-
-        return img / self.V
-
-
-from models.net_torch import NetworkPMRID as Network
-class Denoiser:
-
-    def __init__(self, model_path, ksigma: KSigmaCur, inp_scale=256.0):
-        net = Network()
-        net.load_CKPT(str(model_path), device=torch.device('cpu'))
-        net.eval()
-
-        self.net = net
-        self.ksigma = ksigma
-        self.inp_scale = inp_scale
-
-    def pre_process(self, bayer_01: np.ndarray):
-        rggb = RawUtils.bayer2rggb(bayer_01)
-        rggb = rggb.clip(0, 1)
-
-        H, W = rggb.shape[:2]
-        ph, pw = (32-(H % 32))//2, (32-(W % 32))//2
-        rggb = np.pad(rggb, [(ph, ph), (pw, pw), (0, 0)], 'constant')
-        inp_rggb = rggb.transpose(2, 0, 1)[np.newaxis]
-        self.ph, self.pw = ph, pw
-        return inp_rggb
-
-    def run(self, bayer_01: np.ndarray, iso: float):
-        inp_rggb_01 = self.pre_process(bayer_01)
-        inp_rggb_ksigma = self.ksigma(inp_rggb_01, iso)
-        inp_rggb = inp_rggb_ksigma * self.inp_scale
-        print("inp_rggb: ", inp_rggb.min(), inp_rggb.max())
-
-        inp = np.ascontiguousarray(inp_rggb)
-        input_tensor = torch.from_numpy(inp).float()
-        pred = self.net(input_tensor)[0] / self.inp_scale
-
-        # import ipdb; ipdb.set_trace()
-        pred = pred.detach().cpu().numpy()
-        pred = pred.transpose(1, 2, 0)
-        pred = self.ksigma(pred, iso, inverse=True)
-
-        ph, pw = self.ph, self.pw
-        pred = pred[ph:-ph, pw:-pw]
-        return RawUtils.rggb2bayer(pred)
-
-kSigma = KSigmaCur()
+kSigma = KSigma(
+    K_coeff=[0.0005995267, 0.00868861],
+    B_coeff=[7.11772e-7, 6.514934e-4, 0.11492713],
+    anchor=1600,
+)
 
 model_path =  "D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/models/torch_pretrained.ckp"
 Denoiser = Denoiser(model_path, kSigma)
 
-bayer01_RGGB_denoise = Denoiser.run(bayer01_RGGB_noisy, iso=1600.0)
+bayer01_RGGB_denoise = Denoiser.run(bayer01_RGGB_noisy, iso=6400.0)
 bayer01_RGGB_denoise = np.clip(bayer01_RGGB_denoise, 0.0, 1.0)
-import skimage
 
 # ---------- save image ---------- #
 # ----- save png ----- #
@@ -124,7 +62,7 @@ print("psnr_bayer01 = ", psnr)
 
 bgr_denoise_std = cv2.imread("denoise_rgb_std.bmp")
 errNorm2 = np.linalg.norm(bgr_denoise.astype(np.float32) - bgr_denoise_std.astype(np.float32))
-# print(errNorm2)
+print("errNorm2 = ", errNorm2)
 
 # ----- save vrf ----- #
 out_ratio = 4  #out 12bit
