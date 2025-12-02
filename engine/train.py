@@ -1,0 +1,251 @@
+import torch
+import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
+import torchvision.utils as vutils
+from collections import defaultdict
+import argparse
+
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from data.RawDataset import create_dataloader
+#from dataset_SID import create_dataloader
+
+from models.net_torch import NetworkPMRID as Network
+
+import os
+import numpy as np
+import glob
+import time
+
+def calc_psnr(pred, target):
+    mse = torch.mean((pred - target) ** 2)
+    return 20 * torch.log10(1.0 / torch.sqrt(mse)) # max_val = 1
+
+class NoiseProfile:
+    K  = (0.0005995267, 0.00868861)
+    B = (7.11772e-7, 6.514934e-4, 0.11492713)
+    value_scale  = 959.0
+
+class NoiseProfileFunc:
+    def __init__(self, noise_profile: NoiseProfile):
+        self.polyK = np.poly1d(noise_profile.K)
+        self.polyB = np.poly1d(noise_profile.B)
+        self.value_scale = noise_profile.value_scale
+
+    def __call__(self, iso, value_scale=959.0):
+        r = value_scale / self.value_scale
+        k = self.polyK(iso) * r
+        b = self.polyB(iso) * r * r
+
+        return k, b
+
+noise_func = NoiseProfileFunc(NoiseProfile)
+
+def k_sigma(iso):
+    k, sigma = noise_func(iso, value_scale=959)
+    k_a, sigma_a = noise_func(1600, value_scale=959)
+    
+    cvt_k = k_a / k
+    cvt_b = (sigma / (k ** 2) - sigma_a / (k_a ** 2)) * k_a
+
+    return cvt_k, cvt_b
+
+
+def train():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model_dir', 
+                        default='models/PMRID_test',
+                        help='Location at which to save model logs and checkpoints.'
+                        )
+    parser.add_argument('--train_pattern', 
+                        default='D:/image_database/SID/SID/Sony/long/*.ARW',
+                        help='Pattern for directory containing source JPG images for training.'
+                        )
+    parser.add_argument('--test_pattern', 
+                        default='D:/image_database/SID/SID/Sony/long_test/*.ARW',
+                        help='Pattern for directory containing source JPG images for testing.'                   
+                        )
+    parser.add_argument('--image_size', type=int, default=1024)
+    parser.add_argument('--batch_size', type=int, default=1)
+    parser.add_argument('--learning_rate', type=float, default=1e-3)
+    parser.add_argument('--num_epochs', type=float, default=8000)
+    parser.add_argument('--train_loss_log_step', type=int, default=100, help='Log train loss every N steps') # 1000
+    parser.add_argument('--eval_step', type=int, default=500, help='Log images to TensorBoard every N steps') # 5000
+    parser.add_argument('--resume', default=True, help='Whether to resume training')
+
+    args = parser.parse_args()
+
+    # visible_device_list代码端配置  2 3 1 0    <->    window任务管理器  GPU0 GPU1 GPU2 GPU3
+    device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
+    model = Network().to(device)
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    criterion = torch.nn.L1Loss()
+
+    # load checkpoint
+    if args.resume:
+        best_model_path, best_psnr = find_best_model(args.model_dir)
+        if best_model_path:
+            print(f"find best checkpoint: {best_model_path} (PSNR: {best_psnr:.2f})")
+
+            checkpoint = torch.load(best_model_path, weights_only=True)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_step = checkpoint['step']
+            best_psnr = checkpoint['psnr']
+            print(f"resume from step:{start_step}, best PSNR: {best_psnr:.2f}")
+        else:
+            start_step = 0
+            print(f'not finding saved checkpoint, training a new model from step:0')  
+    else:
+        start_step = 0
+        print(f'training a new model from step:0')
+
+
+    train_loader = create_dataloader(args.train_pattern, args.image_size, args.image_size, args.batch_size)
+    test_loader = create_dataloader(args.test_pattern, args.image_size, args.image_size, args.batch_size)
+    
+    writer = SummaryWriter(os.path.join(args.model_dir, 'log'))
+    
+    # Track top 10 models by PSNR
+    top_models = defaultdict(list)
+    os.makedirs(os.path.join(args.model_dir, 'top_models'), exist_ok=True)
+
+    for epoch in range(args.num_epochs): 
+        model.train()
+        start_time = time.time()
+        for batch_idx, (inputs_rggb, inputs_rggb_noisy, inputs_rggb_noisy_k, meta_data) in enumerate(train_loader):
+            inputs_rggb_noisy_k = inputs_rggb_noisy_k.permute(0, 3, 1, 2).to(device)
+            inputs_rggb = inputs_rggb.permute(0, 3, 1, 2).to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs_rggb_noisy_k.to(torch.float32))
+            cvt_k, cvt_b = meta_data['cvt_k'], meta_data['cvt_b']
+            cvt_k = cvt_k.to(device)
+            cvt_b = cvt_b.to(device)
+            # outputs = (outputs - torch.tensor(cvt_b, device=device))/torch.tensor(cvt_k, device=device)
+            outputs = (outputs - cvt_b)/cvt_k
+
+            loss = criterion(outputs, inputs_rggb)
+            loss.backward()
+            optimizer.step()
+            
+            step = start_step + batch_idx + 1 + epoch * len(train_loader)
+            if step % args.train_loss_log_step == 0:
+                current_time = time.time() # s
+                print(f'Epoch: {epoch}, Step: {step}, Batch: {batch_idx + 1}/{len(train_loader)}, Loss: {loss.item():.6f}, Time: {(current_time - start_time):.2f}s')
+                start_time = current_time
+                writer.add_scalar('train_loss', loss.item(), step)
+
+            # evaluate
+            if step % args.eval_step == 0:
+                # Evaluation each epoch
+                model.eval()
+                test_loss = 0
+                test_psnr = 0
+                example_images = []  # Store example images for visualization
+
+                with torch.no_grad():
+                    for inputs_rggb, inputs_rggb_noisy, inputs_rggb_noisy_k, meta_data in test_loader:
+                        inputs_rggb = inputs_rggb.permute(0, 3, 1, 2).to(device)
+                        inputs_rggb_noisy_k = inputs_rggb_noisy_k.permute(0, 3, 1, 2).to(device)
+                        
+                        outputs = model(inputs_rggb_noisy_k.to(torch.float32))
+                        iso = meta_data['iso'].item()
+                        cvt_k, cvt_b = k_sigma(iso)
+                        outputs = (outputs - torch.tensor(cvt_b, device=device))/torch.tensor(cvt_k, device=device)
+
+                        test_loss += criterion(outputs, inputs_rggb).item()
+                        test_psnr += calc_psnr(outputs, inputs_rggb).item()
+
+                        # Store first batch of images for visualization
+                        # if len(example_images) == 0:
+                        #     example_images.append({
+                        #         'noisy': inputs,  # batch
+                        #         'denoised': outputs,
+                        #         'clean': labels
+                        #     })
+                        # break
+                # log metrics
+                test_loss /= len(test_loader)
+                test_psnr /= len(test_loader)
+                print(f'Epoch: {epoch}, Test Loss: {test_loss:.6f}, Test PSNR: {test_psnr:.2f}')
+                writer.add_scalar('test_loss', test_loss, step)
+                writer.add_scalar('test_psnr', test_psnr, step)
+
+                # log imagaes
+                # images = example_images[0]
+                # # Create grid of images
+                # noisy_img_rgb = process.process(images['noisy'].permute(0,2,3,1).to('cpu'), inputs['red_gain'], inputs['blue_gain'], inputs['cam2rgb'])
+                # denoised_img_rgb = process.process(images['denoised'].permute(0,2,3,1).to('cpu'), inputs['red_gain'], inputs['blue_gain'], inputs['cam2rgb'])
+                # clean_img_rgb = process.process(images['clean'].permute(0,2,3,1).to('cpu'), inputs['red_gain'], inputs['blue_gain'], inputs['cam2rgb'])
+                
+                # cat_img_rgb = torch.stack((noisy_img_rgb[0], denoised_img_rgb[0],clean_img_rgb[0]), dim=-1)
+                # cat_img_grid = vutils.make_grid(cat_img_rgb.permute(3,2,0,1))   # [B, C, H, W]
+                # writer.add_image('noisy-denoised-clean', cat_img_grid, step)
+
+                # noisy_grid = vutils.make_grid(noisy_img_rgb[0].permute(2,0,1) )# normalize=True)        # [C, H, W]
+                # denoised_grid = vutils.make_grid(denoised_img_rgb[0].permute(2,0,1))# normalize=True)
+                # clean_grid = vutils.make_grid(clean_img_rgb[0].permute(2,0,1) )# normalize=True)
+
+                #writer.add_image('Noisy', noisy_grid, epoch)
+                #writer.add_image('Denoised', denoised_grid, epoch) 
+                #writer.add_image('Clean', clean_grid, epoch)
+                
+                # Also log the difference between denoised and clean
+                # diff = torch.abs(denoised_img_rgb - clean_img_rgb)
+                # diff_grid = vutils.make_grid(diff[0].permute(2,0,1)) #, normalize=True)
+                # writer.add_image('Difference', diff_grid, step)
+
+                # Save and update models
+                # torch.save(model.state_dict(), f'{args.model_dir}/model_{epoch}.pth')
+                save_checkpoint(top_models, model, optimizer, epoch, step, test_psnr, args.model_dir)
+                
+
+def save_checkpoint(top_models, model, optimizer, epoch, step, psnr, model_dir):
+    os.makedirs(model_dir, exist_ok=True)
+                     
+    if len(top_models) < 10 or psnr > min(top_models.keys()):
+        # Remove the worst model if we already have 10
+        if len(top_models) >= 10:
+            worst_psnr = min(top_models.keys())
+            os.remove(top_models[worst_psnr][0])
+            del top_models[worst_psnr]        
+
+        top_model_path = os.path.join(model_dir, 'top_models', f'top_model_psnr_{psnr:.2f}_step_{step}.pth')
+        torch.save({
+            'epoch':epoch,
+            'step':step, 
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'psnr':psnr}, 
+            top_model_path)
+        top_models[psnr] = (top_model_path, step)
+
+        # # Save metadata about top models
+        # with open(os.path.join(model_dir, 'top_models', 'top_models_info.txt'), 'w') as f:
+        #     for psnr, (path, step) in sorted(top_models.items(), reverse=True):
+        #         f.write(f"PSNR: {psnr:.2f}, Step: {step}, Path: {path}\n")   
+
+
+def find_best_model(model_dir):
+    if not os.path.exists(model_dir):
+        return None, -1
+    
+    checkpoint_files = glob.glob(os.path.join(model_dir, 'top_models', 'top_model_psnr_*_step_*.pth'))
+    if not checkpoint_files:
+        return None, -1
+
+    psnr_values = []
+    for f in checkpoint_files:
+        try:
+            psnr = float(os.path.basename(f).split('_')[3])
+            psnr_values.append(psnr)
+        except:
+            continue
+
+    best_idx = np.argmax(psnr_values)
+    return  checkpoint_files[best_idx], psnr_values[best_idx]
+
+if __name__ == '__main__':
+    train()
