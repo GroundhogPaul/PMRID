@@ -44,6 +44,7 @@ class KSigma:
         Sigma = self.Sigma(iso)
 
         return k, Sigma
+
 class Denoiser:
 
     def __init__(self, model_path: Path, ksigma: KSigma, inp_scale=256.0):
@@ -55,34 +56,41 @@ class Denoiser:
         self.ksigma = ksigma
         self.inp_scale = inp_scale
 
-    def pre_process(self, bayer_01: np.ndarray):
-        rggb = RawUtils.bayer2rggb(bayer_01)
-        rggb = rggb.clip(0, 1)
+    def pre_process(self, bayer_01: np.ndarray): # 1. bayer to rggb; 2. pad to 32 multiple; 3. HWCh to BChHW
+        rggb01_HWCh = RawUtils.bayer2rggb(bayer_01)
+        rggb01_HWCh = rggb01_HWCh.clip(0, 1)
 
-        H, W = rggb.shape[:2]
+        H, W = rggb01_HWCh.shape[:2]
         ph, pw = (32-(H % 32))//2, (32-(W % 32))//2
-        rggb = np.pad(rggb, [(ph, ph), (pw, pw), (0, 0)], 'constant')
-        inp_rggb = rggb.transpose(2, 0, 1)[np.newaxis]
+        rggb01_HWCh = np.pad(rggb01_HWCh, [(ph, ph), (pw, pw), (0, 0)], 'constant')
         self.ph, self.pw = ph, pw
-        return inp_rggb
+        rggb01_BChHW = rggb01_HWCh.transpose(2, 0, 1)[np.newaxis]
+        return rggb01_BChHW
+    
+    def post_process(self, pred_BChHW: np.ndarray): # 1. BChHW to HWCh; 2. unpad; 3. rggb to bayer
+        assert pred_BChHW.ndim == 4 and pred_BChHW.shape[0] == 1
+        pred_HWCh = pred_BChHW[0].transpose(1, 2, 0)
+        ph, pw = self.ph, self.pw
+        pred_HWCh = pred_HWCh[ph:-ph, pw:-pw]
+        return RawUtils.rggb2bayer(pred_HWCh)
 
     def run(self, bayer_01: np.ndarray, iso: float):
-        inp_rggb_01 = self.pre_process(bayer_01)
-        inp_rggb_ksigma = self.ksigma(inp_rggb_01, iso)
-        inp_rggb = inp_rggb_ksigma * self.inp_scale
+        rggb01_BChHW = self.pre_process(bayer_01)
+        rggb01_BChHW_ksigma = self.ksigma(rggb01_BChHW, iso)
+        rggb_BChHW_ksigma = rggb01_BChHW_ksigma * self.inp_scale
 
-        inp = np.ascontiguousarray(inp_rggb)
+        inp = np.ascontiguousarray(rggb_BChHW_ksigma)
         input_tensor = torch.from_numpy(inp).float()
-        pred = self.net(input_tensor)[0] / self.inp_scale
+        pred_ChHW = self.net(input_tensor)[0] / self.inp_scale
 
         # import ipdb; ipdb.set_trace()
-        pred = pred.detach().cpu().numpy()
-        pred = pred.transpose(1, 2, 0)
-        pred = self.ksigma(pred, iso, inverse=True)
+        pred_ChHW = pred_ChHW.detach().cpu().numpy()
+        pred_HWCh = pred_ChHW.transpose(1, 2, 0)
+        pred_HWCh = self.ksigma(pred_HWCh, iso, inverse=True)
 
         ph, pw = self.ph, self.pw
-        pred = pred[ph:-ph, pw:-pw]
-        return RawUtils.rggb2bayer(pred)
+        pred_HWCh = pred_HWCh[ph:-ph, pw:-pw]
+        return RawUtils.rggb2bayer(pred_HWCh)
 
 
 def run_benchmark(model_path, bm_loader: BenchmarkLoader):
