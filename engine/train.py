@@ -10,6 +10,9 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.RawDataset import create_dataloader
 #from dataset_SID import create_dataloader
+from benchmark import BenchmarkLoader
+from run_benchmark import Denoiser, KSigma
+from utilRaw import RawUtils
 
 from models.net_torch import NetworkPMRID as Network
 
@@ -17,10 +20,8 @@ import os
 import numpy as np
 import glob
 import time
-
-def calc_psnr(pred, target):
-    mse = torch.mean((pred - target) ** 2)
-    return 20 * torch.log10(1.0 / torch.sqrt(mse)) # max_val = 1
+from tqdm import tqdm
+from utils.loss import calc_psnr
 
 class NoiseProfile:
     K  = (0.0005995267, 0.00868861)
@@ -88,8 +89,8 @@ def train():
         if best_model_path:
             print(f"find best checkpoint: {best_model_path} (PSNR: {best_psnr:.2f})")
 
-            checkpoint = torch.load(best_model_path, weights_only=True)
-            model.load_state_dict(checkpoint['model_state_dict'])
+            checkpoint = torch.load(best_model_path, weights_only=False)
+            model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_step = checkpoint['step']
             best_psnr = checkpoint['psnr']
@@ -103,8 +104,10 @@ def train():
 
 
     train_loader = create_dataloader(args.train_pattern, args.image_size, args.image_size, args.batch_size)
-    test_loader = create_dataloader(args.test_pattern, args.image_size, args.image_size, args.batch_size)
-    
+    # test_loader = create_dataloader(args.test_pattern, args.image_size, args.image_size, args.batch_size)
+    import pathlib as Path
+    pathBenchMarkJson = Path.Path("D:/users/xiaoyaopan/PxyAI/DataSet/PMRID/PMRID/benchmark.json")
+    bm_loader = BenchmarkLoader(pathBenchMarkJson.resolve())
     writer = SummaryWriter(os.path.join(args.model_dir, 'log'))
     
     # Track top 10 models by PSNR
@@ -140,35 +143,61 @@ def train():
             # evaluate
             if step % args.eval_step == 0:
                 # Evaluation each epoch
-                model.eval()
-                test_loss = 0
-                test_psnr = 0
-                example_images = []  # Store example images for visualization
+                ksigma = KSigma(
+                    K_coeff=[0.0005995267, 0.00868861],
+                    B_coeff=[7.11772e-7, 6.514934e-4, 0.11492713],
+                    anchor=1600,
+                )
+                denoiser = Denoiser(model, ksigma, device = device, inp_scale = 1.0)
+                # PSNRtest_psnr s_bayer_denoise = []
+                test_loss = 0.0
+                test_psnr = 0 
+                # example_images = []  # Store example images for visualization
 
+                bar = tqdm(bm_loader)
                 with torch.no_grad():
-                    for inputs_rggb, inputs_rggb_noisy, inputs_rggb_noisy_k, meta_data in test_loader:
-                        inputs_rggb = inputs_rggb.permute(0, 3, 1, 2).to(device)
-                        inputs_rggb_noisy_k = inputs_rggb_noisy_k.permute(0, 3, 1, 2).to(device)
+                    for input_bayer, gt_bayer, meta in bar:
+                        psnrs_bayer_denoise, ssims_bayer_denoise = [], []
+                        bar.set_description(meta.name)
+                        assert meta.bayer_pattern == 'BGGR'
+                        input_bayer_01, gt_bayer_01 = RawUtils.bggr2rggb(input_bayer, gt_bayer)
+                        gt_bayer_01 = torch.from_numpy(np.ascontiguousarray(gt_bayer_01)).cuda(device)
+                        input_bayer_01 = torch.from_numpy(np.ascontiguousarray(input_bayer_01)).cuda(device)
+                        pred_bayer_01 = denoiser.run(input_bayer_01, iso=meta.ISO)
+                        for x0, y0, x1, y1 in meta.ROIs:
+                            # ----- raw ----- #
+                            pred_patch_bayer_01 = pred_bayer_01[y0:y1, x0:x1]
+                            gt_patch_bayer_01 = gt_bayer_01[y0:y1, x0:x1]
+
+                            psnr_bayer_denoise = calc_psnr(gt_patch_bayer_01, pred_patch_bayer_01)
+                            psnrs_bayer_denoise.append(float(psnr_bayer_denoise))
+
+                        # test_loss += criterion(gt_rggb_01, output_rggb_01).item()
+                        test_psnr += np.mean(psnrs_bayer_denoise)
+
+                #     for inputs_rggb, inputs_rggb_noisy, inputs_rggb_noisy_k, meta_data in test_loader:
+                #         inputs_rggb = inputs_rggb.permute(0, 3, 1, 2).to(device)
+                #         inputs_rggb_noisy_k = inputs_rggb_noisy_k.permute(0, 3, 1, 2).to(device)
                         
-                        outputs = model(inputs_rggb_noisy_k.to(torch.float32))
-                        iso = meta_data['iso'].item()
-                        cvt_k, cvt_b = k_sigma(iso)
-                        outputs = (outputs - torch.tensor(cvt_b, device=device))/torch.tensor(cvt_k, device=device)
+                #         outputs = model(inputs_rggb_noisy_k.to(torch.float32))
+                #         iso = meta_data['iso'].item()
+                #         cvt_k, cvt_b = k_sigma(iso)
+                #         outputs = (outputs - torch.tensor(cvt_b, device=device))/torch.tensor(cvt_k, device=device)
 
-                        test_loss += criterion(outputs, inputs_rggb).item()
-                        test_psnr += calc_psnr(outputs, inputs_rggb).item()
+                #         test_loss += criterion(outputs, inputs_rggb).item()
+                #         test_psnr += calc_psnr(outputs, inputs_rggb).item()
 
-                        # Store first batch of images for visualization
-                        # if len(example_images) == 0:
-                        #     example_images.append({
-                        #         'noisy': inputs,  # batch
-                        #         'denoised': outputs,
-                        #         'clean': labels
-                        #     })
-                        # break
-                # log metrics
-                test_loss /= len(test_loader)
-                test_psnr /= len(test_loader)
+                #         # Store first batch of images for visualization
+                #         # if len(example_images) == 0:
+                #         #     example_images.append({
+                #         #         'noisy': inputs,  # batch
+                #         #         'denoised': outputs,
+                #         #         'clean': labels
+                #         #     })
+                #         # break
+                # # log metrics
+                test_loss /= len(bm_loader)
+                test_psnr /= len(bm_loader)
                 print(f'Epoch: {epoch}, Test Loss: {test_loss:.6f}, Test PSNR: {test_psnr:.2f}')
                 writer.add_scalar('test_loss', test_loss, step)
                 writer.add_scalar('test_psnr', test_psnr, step)
@@ -216,7 +245,7 @@ def save_checkpoint(top_models, model, optimizer, epoch, step, psnr, model_dir):
         torch.save({
             'epoch':epoch,
             'step':step, 
-            'model_state_dict': model.state_dict(),
+            'state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'psnr':psnr}, 
             top_model_path)
