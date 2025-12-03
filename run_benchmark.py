@@ -47,14 +47,15 @@ class KSigma:
 
 class Denoiser:
 
-    def __init__(self, model_path: Path, ksigma: KSigma, inp_scale=256.0):
-        net = Network()
-        net.load_CKPT(str(model_path), device=torch.device('cpu'))
+    def __init__(self, net: Network, ksigma: KSigma, device, inp_scale=256.0):
+        # net = Network()
+        # net.load_CKPT(str(model_path), device=torch.device('cpu'))
         net.eval()
 
         self.net = net
         self.ksigma = ksigma
         self.inp_scale = inp_scale
+        self.device = device
 
     def pre_process(self, bayer_01: np.ndarray): # 1. bayer to rggb; 2. pad to 32 multiple; 3. HWCh to BChHW
         rggb01_HWCh = RawUtils.bayer2rggb(bayer_01)
@@ -67,9 +68,14 @@ class Denoiser:
         rggb01_BChHW = rggb01_HWCh.transpose(2, 0, 1)[np.newaxis]
         return rggb01_BChHW
     
-    def post_process(self, pred_BChHW: np.ndarray): # 1. BChHW to HWCh; 2. unpad; 3. rggb to bayer
+    def post_process(self, pred_BChHW): # 1. BChHW to HWCh; 2. unpad; 3. rggb to bayer
         assert pred_BChHW.ndim == 4 and pred_BChHW.shape[0] == 1
-        pred_HWCh = pred_BChHW[0].transpose(1, 2, 0)
+        if hasattr(pred_BChHW, 'permute'):    # Pytorch
+            pred_HWCh = pred_BChHW[0].permute(1, 2, 0)
+        elif hasattr(pred_BChHW, 'transpose'):      # Numpy
+            pred_HWCh = pred_BChHW[0].transpose(1, 2, 0)
+        else:
+            raise NotImplementedError("Input must be a numpy array or pytorch tensor, current type: {}".format(type(rggb)))
         ph, pw = self.ph, self.pw
         pred_HWCh = pred_HWCh[ph:-ph, pw:-pw]
         return RawUtils.rggb2bayer(pred_HWCh)
@@ -77,20 +83,17 @@ class Denoiser:
     def run(self, bayer_01: np.ndarray, iso: float):
         rggb01_BChHW = self.pre_process(bayer_01)
         rggb01_BChHW_ksigma = self.ksigma(rggb01_BChHW, iso)
+
         rggb_BChHW_ksigma = rggb01_BChHW_ksigma * self.inp_scale
-
         inp = np.ascontiguousarray(rggb_BChHW_ksigma)
-        input_tensor = torch.from_numpy(inp).float()
-        pred_ChHW = self.net(input_tensor)[0] / self.inp_scale
+        input_tensor = torch.from_numpy(inp).float().cuda(self.device)
+        pred_ChHW_ksigma = self.net(input_tensor) / self.inp_scale
 
-        # import ipdb; ipdb.set_trace()
-        pred_ChHW = pred_ChHW.detach().cpu().numpy()
-        pred_HWCh = pred_ChHW.transpose(1, 2, 0)
-        pred_HWCh = self.ksigma(pred_HWCh, iso, inverse=True)
-
-        ph, pw = self.ph, self.pw
-        pred_HWCh = pred_HWCh[ph:-ph, pw:-pw]
-        return RawUtils.rggb2bayer(pred_HWCh)
+        pred_ChHW_ksigma = pred_ChHW_ksigma.detach()
+        pred_HW_ksigma = self.post_process(pred_ChHW_ksigma)
+        pred_HW = self.ksigma(pred_HW_ksigma, iso, inverse=True)
+        pred_HW = pred_HW.cpu().numpy()
+        return pred_HW
 
 
 def run_benchmark(model_path, bm_loader: BenchmarkLoader):
@@ -100,7 +103,12 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
         B_coeff=[7.11772e-7, 6.514934e-4, 0.11492713],
         anchor=1600,
     )
-    denoiser = Denoiser(model_path, ksigma)
+    device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
+    net = Network().to(device)
+    # net = Network()
+    net.load_CKPT(str(model_path), device=torch.device(device))
+    net.eval()
+    denoiser = Denoiser(net, ksigma, device=device)
 
     PSNRs_rgb_denoise, SSIMs_rgb = [], []
     PSNRs_bayer_denoise, SSIMs_bayer_denoise = [], []
