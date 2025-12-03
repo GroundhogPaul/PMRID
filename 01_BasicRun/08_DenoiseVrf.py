@@ -7,6 +7,8 @@ import cv2
 from utilRaw import RawUtils
 from run_benchmark import KSigma, Denoiser
 from utilVrf import read_vrf, save_vrf_image, save_raw_image
+from models.net_torch import NetworkPMRID as Network
+import torch
 
 # ---------- read vrf ---------- #
 # ----- assert paths ----- #
@@ -38,10 +40,19 @@ kSigma = KSigma(
     anchor=1600,
 )
 
-model_path =  "D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/models/torch_pretrained.ckp"
-Denoiser = Denoiser(model_path, kSigma)
+device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
+model_path, inp_scale =  "D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/models/torch_pretrained.ckp", 256
+model_path, inp_scale =  "./models/PMRID_test/top_models/top_model_psnr_49.87_step_196001.pth", 1.0
+net = Network().to(device)
+net.load_CKPT(str(model_path), device=torch.device(device))
+# net.load_PTH(str(model_path), device=torch.device(device))
+net.eval()
 
+Denoiser = Denoiser(net, kSigma, device, inp_scale=inp_scale)
+
+bayer01_RGGB_noisy = torch.from_numpy(np.ascontiguousarray(bayer01_RGGB_noisy)).cuda(device)
 bayer01_RGGB_denoise = Denoiser.run(bayer01_RGGB_noisy, iso=6400.0)
+bayer01_RGGB_denoise = bayer01_RGGB_denoise.cpu().numpy() 
 bayer01_RGGB_denoise = np.clip(bayer01_RGGB_denoise, 0.0, 1.0)
 
 # ---------- save image ---------- #
@@ -52,13 +63,14 @@ bgr01_denoise = RawUtils.bayer01_2_rgb01(bayer01_BGGR_denoise, wb_gain=[1.5156, 
 bgr_denoise = (bgr01_denoise*255.0).astype(np.uint8)
 cv2.imwrite("denoise_rgb.bmp", bgr_denoise)
 
-import skimage
-psnr = skimage.metrics.peak_signal_noise_ratio(bgr_denoise, bgr_noisy)
-print("psnr_bgr = ", psnr)
-print(bayer01_RGGB_denoise.min(), bayer01_RGGB_denoise.max())
-print(bayer01_RGGB_noisy.min(), bayer01_RGGB_noisy.max())
-psnr = skimage.metrics.peak_signal_noise_ratio(bayer01_RGGB_denoise, bayer01_RGGB_noisy) 
-print("psnr_bayer01 = ", psnr)
+# ----- cal psnr ----- #
+# import skimage
+# psnr = skimage.metrics.peak_signal_noise_ratio(bgr_denoise, bgr_noisy)
+# print("psnr_bgr = ", psnr)
+# print(bayer01_RGGB_denoise.min(), bayer01_RGGB_denoise.max())
+# print(bayer01_RGGB_noisy.min(), bayer01_RGGB_noisy.max())
+# psnr = skimage.metrics.peak_signal_noise_ratio(bayer01_RGGB_denoise, bayer01_RGGB_noisy) 
+# print("psnr_bayer01 = ", psnr)
 
 bgr_denoise_std = cv2.imread("denoise_rgb_std.bmp")
 errNorm2 = np.linalg.norm(bgr_denoise.astype(np.float32) - bgr_denoise_std.astype(np.float32))
