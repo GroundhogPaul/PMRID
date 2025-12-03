@@ -9,6 +9,7 @@ import skimage.metrics
 from tqdm import tqdm
 
 import torch
+import torch.nn.functional as F
 from models.net_torch import NetworkPMRID as Network
 import utilBasic
 from utilRaw import RawUtils
@@ -63,9 +64,17 @@ class Denoiser:
 
         H, W = rggb01_HWCh.shape[:2]
         ph, pw = (32-(H % 32))//2, (32-(W % 32))//2
-        rggb01_HWCh = np.pad(rggb01_HWCh, [(ph, ph), (pw, pw), (0, 0)], 'constant')
         self.ph, self.pw = ph, pw
-        rggb01_BChHW = rggb01_HWCh.transpose(2, 0, 1)[np.newaxis]
+        if hasattr(rggb01_HWCh, 'permute'):    # Pytorch
+            rggb01_HWCh = F.pad(rggb01_HWCh, (0, 0, pw, pw, ph, ph), mode='constant', value=0)
+            rggb01_BChHW = rggb01_HWCh.permute(2, 0, 1).unsqueeze(0)
+        elif hasattr(rggb01_HWCh, 'transpose'):      # Numpy
+            rggb01_HWCh = np.pad(rggb01_HWCh, [(ph, ph), (pw, pw), (0, 0)], 'constant')
+            rggb01_BChHW = rggb01_HWCh.transpose(2, 0, 1)[np.newaxis]
+        else:
+            raise NotImplementedError("Input must be a numpy array or pytorch tensor, current type: {}".format(type(rggb01_HWCh)))
+
+        # rggb01_BChHW = rggb01_BChHW.cpu().numpy()
         return rggb01_BChHW
     
     def post_process(self, pred_BChHW): # 1. BChHW to HWCh; 2. unpad; 3. rggb to bayer
@@ -85,14 +94,11 @@ class Denoiser:
         rggb01_BChHW_ksigma = self.ksigma(rggb01_BChHW, iso)
 
         rggb_BChHW_ksigma = rggb01_BChHW_ksigma * self.inp_scale
-        inp = np.ascontiguousarray(rggb_BChHW_ksigma)
-        input_tensor = torch.from_numpy(inp).float().cuda(self.device)
-        pred_ChHW_ksigma = self.net(input_tensor) / self.inp_scale
+        pred_ChHW_ksigma = self.net(rggb_BChHW_ksigma) / self.inp_scale
 
         pred_ChHW_ksigma = pred_ChHW_ksigma.detach()
         pred_HW_ksigma = self.post_process(pred_ChHW_ksigma)
         pred_HW = self.ksigma(pred_HW_ksigma, iso, inverse=True)
-        pred_HW = pred_HW.cpu().numpy()
         return pred_HW
 
 
@@ -119,35 +125,43 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
         bar.set_description(meta.name)
         assert meta.bayer_pattern == 'BGGR'
         input_bayer, gt_bayer = RawUtils.bggr2rggb(input_bayer, gt_bayer)
+        gt_bayer = torch.from_numpy(np.ascontiguousarray(gt_bayer)).cuda(device)
+        input_bayer = torch.from_numpy(np.ascontiguousarray(input_bayer)).cuda(device)
 
         pred_bayer = denoiser.run(input_bayer, iso=meta.ISO)
         # pred_bayer = input_bayer  # dummy for test
 
         inp_rgb, pred_rgb, gt_rgb = RawUtils.bayer01_2_rgb01(
-            input_bayer, pred_bayer, gt_bayer,
+            input_bayer.cpu().numpy(), pred_bayer.cpu().numpy(), gt_bayer.cpu().numpy(),
             wb_gain=meta.wb_gain, CCM=meta.CCM,
         )
 
         inp_rgb, pred_rgb, gt_rgb = RawUtils.bggr2rggb(inp_rgb, pred_rgb, gt_rgb)
         bar.set_description(meta.name+' ✓')
-        assert cv2.imwrite("inp_rgb.png", (inp_rgb*255.0).astype(np.uint8))
-        assert cv2.imwrite("pred_rgb.png", (pred_rgb*255.0).astype(np.uint8))
-        assert cv2.imwrite("gt_rgb.png", (gt_rgb*255.0).astype(np.uint8))
+        # assert cv2.imwrite("inp_rgb.png", (inp_rgb*255.0).astype(np.uint8))
+        # assert cv2.imwrite("pred_rgb.png", (pred_rgb*255.0).astype(np.uint8))
+        # assert cv2.imwrite("gt_rgb.png", (gt_rgb*255.0).astype(np.uint8))
 
         psnrs_rgb_denoise, ssims_rgb_denoise = [], []
         psnrs_rgb_noisy, ssims_rgb_noisy = [], []
         psnrs_bayer_denoise, ssims_bayer_denoise = [], []
         psnrs_bayer_noisy, ssims_bayer_noisy = [], []
 
+        # pred_bayer = torch.from_numpy(np.ascontiguousarray(pred_bayer))
+        # gt_bayer = torch.from_numpy(np.ascontiguousarray(gt_bayer))
+        # input_bayer = torch.from_numpy(np.ascontiguousarray(input_bayer))
         for x0, y0, x1, y1 in meta.ROIs:
             # ----- raw ----- #
             pred_patch_bayer = pred_bayer[y0:y1, x0:x1]
             gt_patch_bayer = gt_bayer[y0:y1, x0:x1]
             noisy_patch_bayer = input_bayer[y0:y1, x0:x1]
 
-            psnr_bayer_denoise = skimage.metrics.peak_signal_noise_ratio(gt_patch_bayer, pred_patch_bayer)
+            def calc_psnr(pred, target):
+                mse = torch.mean((pred - target) ** 2)
+                return 20 * torch.log10(1.0 / torch.sqrt(mse)) # max_val = 1
+            psnr_bayer_denoise = calc_psnr(gt_patch_bayer, pred_patch_bayer)
             psnrs_bayer_denoise.append(float(psnr_bayer_denoise))
-            psnr_bayer_noisy = skimage.metrics.peak_signal_noise_ratio(gt_patch_bayer, noisy_patch_bayer)
+            psnr_bayer_noisy = calc_psnr(gt_patch_bayer, noisy_patch_bayer)
             psnrs_bayer_noisy.append(float(psnr_bayer_noisy))
             # ssim_bayer = skimage.metrics.structural_similarity(gt_patch_bayer, pred_patch_bayer, multichannel=True)
             # ssims_bayer.append(float(ssim))
