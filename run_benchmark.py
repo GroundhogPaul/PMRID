@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import skimage.metrics
 from tqdm import tqdm
+from utils.loss import calc_psnr
 
 import torch
 import torch.nn.functional as F
@@ -74,7 +75,6 @@ class Denoiser:
         else:
             raise NotImplementedError("Input must be a numpy array or pytorch tensor, current type: {}".format(type(rggb01_HWCh)))
 
-        # rggb01_BChHW = rggb01_BChHW.cpu().numpy()
         return rggb01_BChHW
     
     def post_process(self, pred_BChHW): # 1. BChHW to HWCh; 2. unpad; 3. rggb to bayer
@@ -111,7 +111,6 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
     )
     device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
     net = Network().to(device)
-    # net = Network()
     net.load_CKPT(str(model_path), device=torch.device(device))
     net.eval()
     denoiser = Denoiser(net, ksigma, device=device)
@@ -131,34 +130,29 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
         pred_bayer = denoiser.run(input_bayer, iso=meta.ISO)
         # pred_bayer = input_bayer  # dummy for test
 
-        inp_rgb, pred_rgb, gt_rgb = RawUtils.bayer01_2_rgb01(
-            input_bayer.cpu().numpy(), pred_bayer.cpu().numpy(), gt_bayer.cpu().numpy(),
-            wb_gain=meta.wb_gain, CCM=meta.CCM,
-        )
+        # inp_rgb, pred_rgb, gt_rgb = RawUtils.bayer01_2_rgb01(
+        #     input_bayer.cpu().numpy(), pred_bayer.cpu().numpy(), gt_bayer.cpu().numpy(),
+        #     wb_gain=meta.wb_gain, CCM=meta.CCM,
+        # )
+        # inp_rgb, pred_rgb, gt_rgb = RawUtils.bggr2rggb(inp_rgb, pred_rgb, gt_rgb)
 
-        inp_rgb, pred_rgb, gt_rgb = RawUtils.bggr2rggb(inp_rgb, pred_rgb, gt_rgb)
-        bar.set_description(meta.name+' ✓')
         # assert cv2.imwrite("inp_rgb.png", (inp_rgb*255.0).astype(np.uint8))
         # assert cv2.imwrite("pred_rgb.png", (pred_rgb*255.0).astype(np.uint8))
         # assert cv2.imwrite("gt_rgb.png", (gt_rgb*255.0).astype(np.uint8))
+
+        bar.set_description(meta.name+' ✓')
 
         psnrs_rgb_denoise, ssims_rgb_denoise = [], []
         psnrs_rgb_noisy, ssims_rgb_noisy = [], []
         psnrs_bayer_denoise, ssims_bayer_denoise = [], []
         psnrs_bayer_noisy, ssims_bayer_noisy = [], []
 
-        # pred_bayer = torch.from_numpy(np.ascontiguousarray(pred_bayer))
-        # gt_bayer = torch.from_numpy(np.ascontiguousarray(gt_bayer))
-        # input_bayer = torch.from_numpy(np.ascontiguousarray(input_bayer))
         for x0, y0, x1, y1 in meta.ROIs:
             # ----- raw ----- #
             pred_patch_bayer = pred_bayer[y0:y1, x0:x1]
             gt_patch_bayer = gt_bayer[y0:y1, x0:x1]
             noisy_patch_bayer = input_bayer[y0:y1, x0:x1]
 
-            def calc_psnr(pred, target):
-                mse = torch.mean((pred - target) ** 2)
-                return 20 * torch.log10(1.0 / torch.sqrt(mse)) # max_val = 1
             psnr_bayer_denoise = calc_psnr(gt_patch_bayer, pred_patch_bayer)
             psnrs_bayer_denoise.append(float(psnr_bayer_denoise))
             psnr_bayer_noisy = calc_psnr(gt_patch_bayer, noisy_patch_bayer)
@@ -167,14 +161,14 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
             # ssims_bayer.append(float(ssim))
 
             # ----- rgb ----- #
-            pred_patch_rgb = pred_rgb[y0:y1, x0:x1]
-            gt_patch_rgb = gt_rgb[y0:y1, x0:x1]
-            noisy_patch_rgb = inp_rgb[y0:y1, x0:x1]
+            # pred_patch_rgb = pred_rgb[y0:y1, x0:x1]
+            # gt_patch_rgb = gt_rgb[y0:y1, x0:x1]
+            # noisy_patch_rgb = inp_rgb[y0:y1, x0:x1]
 
-            psnr_rgb_denoise = skimage.metrics.peak_signal_noise_ratio(gt_patch_rgb, pred_patch_rgb)
-            psnrs_rgb_denoise.append(float(psnr_rgb_denoise))
-            psnr_rgb_noisy = skimage.metrics.peak_signal_noise_ratio(gt_patch_rgb, noisy_patch_rgb)
-            psnrs_rgb_noisy.append(float(psnr_rgb_noisy))
+            # psnr_rgb_denoise = skimage.metrics.peak_signal_noise_ratio(gt_patch_rgb, pred_patch_rgb)
+            # psnrs_rgb_denoise.append(float(psnr_rgb_denoise))
+            # psnr_rgb_noisy = skimage.metrics.peak_signal_noise_ratio(gt_patch_rgb, noisy_patch_rgb)
+            # psnrs_rgb_noisy.append(float(psnr_rgb_noisy))
             # ssim = skimage.metrics.structural_similarity(gt_patch, pred_patch, multichannel=True)
             # ssims.append(float(ssim))
 
@@ -182,16 +176,20 @@ def run_benchmark(model_path, bm_loader: BenchmarkLoader):
         print("ISO = ", meta.ISO)
         print("current psnrs_bayer (gt to denoise) = ", np.mean(psnrs_bayer_denoise))
         print("current psnrs_bayer (gt to noisy) = ", np.mean(psnrs_bayer_noisy))
-        print("current psnrs_rgb (gt to denoise) = ", np.mean(psnrs_rgb_denoise)) 
-        print("current psnrs_rgb (gt to noisy) = ", np.mean(psnrs_rgb_noisy)) 
+        # print("current psnrs_rgb (gt to denoise) = ", np.mean(psnrs_rgb_denoise)) 
+        # print("current psnrs_rgb (gt to noisy) = ", np.mean(psnrs_rgb_noisy)) 
 
         PSNRs_rgb_denoise = PSNRs_rgb_denoise + psnrs_rgb_denoise   # list append
         # SSIMs = SSIMs + ssims
         PSNRs_bayer_denoise = PSNRs_bayer_denoise + psnrs_bayer_denoise   # list append
 
-    mean_psnr = np.mean(PSNRs_rgb_denoise)
+    # mean_psnr_rgb = np.mean(PSNRs_rgb_denoise)
+    # print("mean PSNR rgb:", mean_psnr_rgb)
+
+    mean_psnr_bayer = np.mean(PSNRs_bayer_denoise)
+    print("mean PSNR bayer:", mean_psnr_bayer)
+
     # mean_ssim = np.mean(SSIMs)
-    print("mean PSNR:", mean_psnr)
     # print("mean SSIM:", mean_ssim)
 
 
