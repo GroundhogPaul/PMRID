@@ -4,6 +4,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.utils as vutils
 from collections import defaultdict
 import argparse
+import cv2
 
 import sys
 import os
@@ -11,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.RawDataset import create_dataloader
 #from dataset_SID import create_dataloader
 from benchmark import BenchmarkLoader
-from run_benchmark import Denoiser, KSigma
+from run_benchmark import Denoiser, KSigma, Official_Ksigma_params
 from utilRaw import RawUtils
 
 from models.net_torch import NetworkPMRID as Network
@@ -43,16 +44,6 @@ class NoiseProfileFunc:
 
 noise_func = NoiseProfileFunc(NoiseProfile)
 
-def k_sigma(iso):
-    k, sigma = noise_func(iso, value_scale=959)
-    k_a, sigma_a = noise_func(1600, value_scale=959)
-    
-    cvt_k = k_a / k
-    cvt_b = (sigma / (k ** 2) - sigma_a / (k_a ** 2)) * k_a
-
-    return cvt_k, cvt_b
-
-
 def train():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_dir', 
@@ -72,7 +63,7 @@ def train():
     parser.add_argument('--learning_rate', type=float, default=1e-3)
     parser.add_argument('--num_epochs', type=float, default=8000)
     parser.add_argument('--train_loss_log_step', type=int, default=100, help='Log train loss every N steps') # 1000
-    parser.add_argument('--eval_step', type=int, default=500, help='Log images to TensorBoard every N steps') # 5000
+    parser.add_argument('--eval_step', type=int, default=250, help='Log images to TensorBoard every N steps') # 5000
     parser.add_argument('--resume', default=True, help='Whether to resume training')
 
     args = parser.parse_args()
@@ -122,12 +113,14 @@ def train():
             inputs_rggb = inputs_rggb.permute(0, 3, 1, 2).to(device)
             
             optimizer.zero_grad()
+            inp_scale = 256.0
+            inputs_rggb_noisy_k = inputs_rggb_noisy_k * inp_scale # strange magic number from run_benchmark.py
             outputs = model(inputs_rggb_noisy_k.to(torch.float32))
-            cvt_k, cvt_b = meta_data['cvt_k'], meta_data['cvt_b']
-            cvt_k = cvt_k.to(device)
-            cvt_b = cvt_b.to(device)
-            # outputs = (outputs - torch.tensor(cvt_b, device=device))/torch.tensor(cvt_k, device=device)
-            outputs = (outputs - cvt_b)/cvt_k
+            outputs = outputs / inp_scale # strange magic number from run_benchmark.py
+
+            iso = meta_data['iso'].item()
+            kSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
+            outputs = kSigmaCur(outputs, iso, inverse=True)
 
             loss = criterion(outputs, inputs_rggb)
             loss.backward()
@@ -143,16 +136,11 @@ def train():
             # evaluate
             if step % args.eval_step == 0:
                 # Evaluation each epoch
-                ksigma = KSigma(
-                    K_coeff=[0.0005995267, 0.00868861],
-                    B_coeff=[7.11772e-7, 6.514934e-4, 0.11492713],
-                    anchor=1600,
-                )
-                denoiser = Denoiser(model, ksigma, device = device, inp_scale = 1.0)
+                denoiser = Denoiser(model, kSigmaCur, device = device, inp_scale = inp_scale)
                 # PSNRtest_psnr s_bayer_denoise = []
                 test_loss = 0.0
                 test_psnr = 0 
-                # example_images = []  # Store example images for visualization
+                example_images = []  # Store example images for visualization
 
                 bar = tqdm(bm_loader)
                 with torch.no_grad():
@@ -175,26 +163,24 @@ def train():
                         # test_loss += criterion(gt_rggb_01, output_rggb_01).item()
                         test_psnr += np.mean(psnrs_bayer_denoise)
 
-                #     for inputs_rggb, inputs_rggb_noisy, inputs_rggb_noisy_k, meta_data in test_loader:
-                #         inputs_rggb = inputs_rggb.permute(0, 3, 1, 2).to(device)
-                #         inputs_rggb_noisy_k = inputs_rggb_noisy_k.permute(0, 3, 1, 2).to(device)
-                        
-                #         outputs = model(inputs_rggb_noisy_k.to(torch.float32))
-                #         iso = meta_data['iso'].item()
-                #         cvt_k, cvt_b = k_sigma(iso)
-                #         outputs = (outputs - torch.tensor(cvt_b, device=device))/torch.tensor(cvt_k, device=device)
-
-                #         test_loss += criterion(outputs, inputs_rggb).item()
-                #         test_psnr += calc_psnr(outputs, inputs_rggb).item()
-
-                #         # Store first batch of images for visualization
-                #         # if len(example_images) == 0:
-                #         #     example_images.append({
-                #         #         'noisy': inputs,  # batch
-                #         #         'denoised': outputs,
-                #         #         'clean': labels
-                #         #     })
-                #         # break
+                        # Store first batch of images for visualization
+                        if len(example_images) == 0 and meta.ISO == 6400.0:
+                            labels_test = RawUtils.bayer01_2_rgb01(gt_bayer_01.cpu().numpy(), gamma=2.2, wb_gain=meta.wb_gain, CCM=meta.CCM)
+                            inputs_test = RawUtils.bayer01_2_rgb01(input_bayer_01.cpu().numpy(), gamma=2.2, wb_gain=meta.wb_gain, CCM=meta.CCM)
+                            outputs_test = RawUtils.bayer01_2_rgb01(pred_bayer_01.cpu().numpy(), gamma=2.2, wb_gain=meta.wb_gain, CCM=meta.CCM)
+                            labels_test = (labels_test*255.0).astype(np.uint8)
+                            inputs_test = (inputs_test*255.0).astype(np.uint8)
+                            outputs_test = (outputs_test*255.0).astype(np.uint8)
+                            cv2.imwrite("gt_rgb_from_benchmark.bmp", labels_test)
+                            cv2.imwrite("noisy_rgb_from_benchmark.bmp", inputs_test)
+                            cv2.imwrite("denoised_rgb_from_benchmark.bmp", outputs_test)
+                            pred_bayer_01
+                            example_images.append({
+                                'noisy_test': inputs_test,  # batch
+                                'denoised_test': outputs_test,
+                                'clean_test': labels_test
+                            })
+                            # break
                 # # log metrics
                 test_loss /= len(bm_loader)
                 test_psnr /= len(bm_loader)
@@ -204,22 +190,9 @@ def train():
 
                 # log imagaes
                 # images = example_images[0]
-                # # Create grid of images
-                # noisy_img_rgb = process.process(images['noisy'].permute(0,2,3,1).to('cpu'), inputs['red_gain'], inputs['blue_gain'], inputs['cam2rgb'])
-                # denoised_img_rgb = process.process(images['denoised'].permute(0,2,3,1).to('cpu'), inputs['red_gain'], inputs['blue_gain'], inputs['cam2rgb'])
-                # clean_img_rgb = process.process(images['clean'].permute(0,2,3,1).to('cpu'), inputs['red_gain'], inputs['blue_gain'], inputs['cam2rgb'])
-                
-                # cat_img_rgb = torch.stack((noisy_img_rgb[0], denoised_img_rgb[0],clean_img_rgb[0]), dim=-1)
-                # cat_img_grid = vutils.make_grid(cat_img_rgb.permute(3,2,0,1))   # [B, C, H, W]
-                # writer.add_image('noisy-denoised-clean', cat_img_grid, step)
-
-                # noisy_grid = vutils.make_grid(noisy_img_rgb[0].permute(2,0,1) )# normalize=True)        # [C, H, W]
-                # denoised_grid = vutils.make_grid(denoised_img_rgb[0].permute(2,0,1))# normalize=True)
-                # clean_grid = vutils.make_grid(clean_img_rgb[0].permute(2,0,1) )# normalize=True)
-
-                #writer.add_image('Noisy', noisy_grid, epoch)
-                #writer.add_image('Denoised', denoised_grid, epoch) 
-                #writer.add_image('Clean', clean_grid, epoch)
+                # writer.add_image('Noisy_test', images['noisy_test'], epoch)
+                # writer.add_image('Denoised_test', images['denoised_test'], epoch) 
+                # writer.add_image('Clean_test', images['clean_test'], epoch)
                 
                 # Also log the difference between denoised and clean
                 # diff = torch.abs(denoised_img_rgb - clean_img_rgb)

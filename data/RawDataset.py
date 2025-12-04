@@ -10,6 +10,9 @@ import torchvision.transforms as transforms
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
+from run_benchmark import KSigma, Official_Ksigma_params
+import copy
+import cv2
 import math
 
 class NoiseProfile:
@@ -118,7 +121,6 @@ class RawArrayToTensor:
 class PMRIDRawDataset(Dataset):
     def __init__(self, dir_pattern, height=1024, width=1024):
         self.filenames = glob.glob(dir_pattern) 
-        self.noise_func = NoiseProfileFunc(NoiseProfile)
         self.height = height
         self.width = width
 
@@ -162,20 +164,21 @@ class PMRIDRawDataset(Dataset):
 
     def add_noise(self, input_bayer_01, noise_type='Gaussian'):
         iso = torch.randint(100, 6400, (1,))
-        k, b = self.noise_func(iso)
-        kSigmaCalibLevel = 1024.0
+        KSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
+        k, sigma = KSigmaCur.GetKSigma(iso)
+
+        kSigmaCalibLevel = 959 # 1023 - black_level(64), copy from run_benchmark.py
         input_bayer = input_bayer_01 * kSigmaCalibLevel # to kSigma calibrate scale 
-        # input_bayer = input_bayer_01 * 1.0 
 
         if noise_type == 'PoissonGaussian':
             # Poisson and Gaussian noise model
             shot_noise = torch.poisson(input_bayer / k) * k
-            read_noise = torch.randn(input_bayer.shape) * torch.sqrt(torch.tensor(b))
+            read_noise = torch.randn(input_bayer.shape) * torch.sqrt(torch.tensor(sigma))
             noisy_bayer = shot_noise + read_noise
         
         elif noise_type == 'Gaussian':
             # Gaussian noise model
-            variance = input_bayer * k + b
+            variance = input_bayer * k + sigma
             noise = torch.randn_like(input_bayer) * torch.sqrt(variance)
             noisy_bayer = input_bayer + noise
 
@@ -184,16 +187,7 @@ class PMRIDRawDataset(Dataset):
 
         noisy_bayer_01 = noisy_bayer / kSigmaCalibLevel  # to original scale
 
-        return torch.clamp(noisy_bayer_01.to(torch.float32), 0, 1), iso
-    
-    def k_sigma(self, iso):
-        k, sigma = self.noise_func(iso)
-        k_a, sigma_a = self.noise_func(1600)
-        
-        cvt_k = k_a / k
-        cvt_b = (sigma / (k ** 2) - sigma_a / (k_a ** 2)) * k_a
-
-        return cvt_k, cvt_b
+        return torch.clamp(noisy_bayer_01.to(torch.float32), 0, 1), copy.deepcopy(KSigmaCur)
     
     def __getitem__(self, index):
         # read raw
@@ -207,34 +201,21 @@ class PMRIDRawDataset(Dataset):
 
         # data transform          
         input_bayer = self.random_crop_and_flip(input_bayer, bayer_pattern, H_crop=self.height, W_crop=self.width, p_flip_ud=0.5, p_flip_lr=0.5)
-        # input_bayer_01 = input_bayer / white_level 
-        input_bayer_01 = (input_bayer - black_level) / (white_level - black_level)
+        input_bayer_01 = input_bayer / white_level  # no black_level at all, copied from benchmark.py.BenchmarkLoader
+        # input_bayer_01 = (input_bayer - black_level) / (white_level - black_level)
         input_bayer_01 = np.clip(input_bayer_01, 0.0, 1.0)
         input_bayer_01 = RawArrayToTensor()(input_bayer_01)  # to [1, H, W] Tensor
         input_rggb_01 = RawUtils.bayer_to_rggb(input_bayer_01, "RGGB")  # to [H/2, W/2, 4] RGGB
 
         # add random noise
-        input_rggb_01_noisy, iso = self.add_noise(input_rggb_01)
+        input_rggb_01_noisy, kSigmaCur = self.add_noise(input_rggb_01)
 
         # apply k sigma transform
-        cvt_k, cvt_b = self.k_sigma(iso)
-        input_rggb_01_noisy_k = input_rggb_01_noisy * cvt_k + cvt_b
-        # input_rggb_01_noisy_k = ((input_rggb_01_noisy * 1023) * cvt_k + cvt_b) / 1023
-
-
-        # self.k_sigma_input = KSigma(
-        #     k_coeff=[0.0005995267, 0.00868861],
-        #     b_coeff=[7.11772e-7, 6.514934e-4, 0.11492713],
-        #     anchor=1600,
-        #     v=input_raw.white_level - input_raw.blc[0]
-        # )
-        # input_rggb_iso = self.k_sigma_input(input_rggb, input_iso, inverse=False)
+        input_rggb_01_noisy_k = kSigmaCur(input_rggb_01_noisy, iso=kSigmaCur.iso_last, inverse=False)
 
         # save meta data
         meta_data = {
-            'iso': iso, 
-            'cvt_k':cvt_k,
-            'cvt_b':cvt_b,
+            'iso': kSigmaCur.iso_last, 
             'black_level': input_raw.black_level_per_channel[0],
             'wb_gain': np.array([wb / 1024.0 for wb in input_raw.camera_whitebalance]),
             'ccm': input_raw.rgb_xyz_matrix[:3, :]

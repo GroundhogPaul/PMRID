@@ -17,6 +17,12 @@ from utilRaw import RawUtils
 from benchmark import BenchmarkLoader, RawMeta
 
 
+Official_Ksigma_params = {
+    "K_coeff" : [0.0005995267, 0.00868861],
+    "B_coeff" : [7.11772e-7, 6.514934e-4, 0.11492713],
+    "anchor" : 1600
+    }
+
 class KSigma:
 
     def __init__(self, K_coeff: Tuple[float, float], B_coeff: Tuple[float, float, float], anchor: float, V: float = 959.0):
@@ -24,6 +30,8 @@ class KSigma:
         self.Sigma = np.poly1d(B_coeff)
         self.anchor = anchor
         self.V = V
+
+        self.iso_last = -1.0
     
     def __call__(self, img_01, iso: float, inverse=False):
         k, sigma = self.K(iso), self.Sigma(iso)
@@ -42,6 +50,7 @@ class KSigma:
         return img / self.V
 
     def GetKSigma(self, iso: float):
+        self.iso_last = iso
         k = self.K(iso)
         Sigma = self.Sigma(iso)
 
@@ -50,8 +59,6 @@ class KSigma:
 class Denoiser:
 
     def __init__(self, net: Network, ksigma: KSigma, device, inp_scale=256.0):
-        # net = Network()
-        # net.load_CKPT(str(model_path), device=torch.device('cpu'))
         net.eval()
 
         self.net = net
@@ -105,9 +112,9 @@ class Denoiser:
 def run_benchmark(model_path, bm_loader: BenchmarkLoader):
 
     ksigma = KSigma(
-        K_coeff=[0.0005995267, 0.00868861],
-        B_coeff=[7.11772e-7, 6.514934e-4, 0.11492713],
-        anchor=1600,
+        K_coeff = Official_Ksigma_params["K_coeff"],
+        B_coeff = Official_Ksigma_params["B_coeff"],
+        anchor = Official_Ksigma_params["anchor"]
     )
     device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
     net = Network().to(device)
