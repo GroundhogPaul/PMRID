@@ -11,6 +11,7 @@ import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
 from run_benchmark import KSigma, Official_Ksigma_params
+import torchvision.transforms as tvtransforms
 import copy
 import cv2
 import math
@@ -199,12 +200,18 @@ class PMRIDRawDataset(Dataset):
         input_bayer = input_raw.raw_image.astype(np.float32)
         H, W = input_bayer.shape
 
+        wb_gain = np.array([wb / 1024.0 for wb in input_raw.camera_whitebalance]),
+        ccm = input_raw.rgb_xyz_matrix[:3, :]
+
         # data transform          
         input_bayer = self.random_crop_and_flip(input_bayer, bayer_pattern, H_crop=self.height, W_crop=self.width, p_flip_ud=0.5, p_flip_lr=0.5)
         input_bayer_01 = input_bayer / white_level  # no black_level at all, copied from benchmark.py.BenchmarkLoader
         # input_bayer_01 = (input_bayer - black_level) / (white_level - black_level)
-        input_bayer_01 = np.clip(input_bayer_01, 0.0, 1.0)
+
+        # brightness and contrast augmentation
         input_bayer_01 = RawArrayToTensor()(input_bayer_01)  # to [1, H, W] Tensor
+        input_bayer_01 = tvtransforms.ColorJitter(brightness=(0.2, 1.2), contrast=(0.5, 1.5))(input_bayer_01)
+        input_bayer_01 = torch.clamp(input_bayer_01, 0.0, 1.0)
         input_rggb_01 = RawUtils.bayer_to_rggb(input_bayer_01, "RGGB")  # to [H/2, W/2, 4] RGGB
 
         # add random noise
@@ -217,8 +224,8 @@ class PMRIDRawDataset(Dataset):
         meta_data = {
             'iso': kSigmaCur.iso_last, 
             'black_level': input_raw.black_level_per_channel[0],
-            'wb_gain': np.array([wb / 1024.0 for wb in input_raw.camera_whitebalance]),
-            'ccm': input_raw.rgb_xyz_matrix[:3, :]
+            'wb_gain': wb_gain,
+            'ccm': ccm
         }
 
         return input_rggb_01, input_rggb_01_noisy, input_rggb_01_noisy_k, meta_data
