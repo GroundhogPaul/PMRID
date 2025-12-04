@@ -17,12 +17,13 @@ def lr_official(epoch):
         lr = lrMax - (lrMax - lrMin) / 4000 * epoch 
     return lr
 
-lstEpochs = list(range(0, 8000, 1))
-lstLrs = [lr_official(epoch) for epoch in lstEpochs]
-plt.plot(lstEpochs, lstLrs)
-plt.xlabel('Epoch')
-plt.ylabel('Learning Rate')
-plt.title('Official Learning Rate Schedule')
-plt.grid()
-plt.show()
+if __name__ == "__main__":
+    lstEpochs = list(range(0, 8000, 1))
+    lstLrs = [lr_official(epoch) for epoch in lstEpochs]
+    plt.plot(lstEpochs, lstLrs)
+    plt.xlabel('Epoch')
+    plt.ylabel('Learning Rate')
+    plt.title('Official Learning Rate Schedule')
+    plt.grid()
+    plt.show()
 
