@@ -9,13 +9,13 @@ import cv2
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data.RawDataset import create_dataloader, PMRIDRawDataset 
+from data.RawDataset import create_dataloader, TimBrooksRawDataset, RawArrayToTensor 
 #from dataset_SID import create_dataloader
 from benchmark import BenchmarkLoader
 from run_benchmark import Denoiser, KSigma, Official_Ksigma_params
 from utilRaw import RawUtils
 
-from models.net_torch import NetworkPMRID as Network
+from models.net_torch import NetworkTimBrooks as Network
 
 import os
 import numpy as np
@@ -27,7 +27,7 @@ from utils.loss import calc_psnr
 def train():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_dir', 
-                        default='models/PMRID_test',
+                        default='models/TIM_BROOKS_test',
                         help='Location at which to save model logs and checkpoints.'
                         )
     parser.add_argument('--train_pattern', 
@@ -74,12 +74,15 @@ def train():
         print(f'training a new model from step:0')
 
 
-    dataset = PMRIDRawDataset(args.train_pattern, args.image_size, args.image_size)
+    dataset = TimBrooksRawDataset(args.train_pattern, args.image_size, args.image_size)
     train_loader = create_dataloader(dataset, args.batch_size)
     # test_loader = create_dataloader(args.test_pattern, args.image_size, args.image_size, args.batch_size)
     import pathlib as Path
     pathBenchMarkJson = Path.Path("D:/users/xiaoyaopan/PxyAI/DataSet/PMRID/PMRID/benchmark.json")
+
     bm_loader = BenchmarkLoader(pathBenchMarkJson.resolve())
+    KSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
+
     writer = SummaryWriter(os.path.join(args.model_dir, 'log'))
     
     # Track top 10 models by PSNR
@@ -89,19 +92,14 @@ def train():
     for epoch in range(args.num_epochs): 
         model.train()
         start_time = time.time()
-        for batch_idx, (inputs_rggb, inputs_rggb_noisy, inputs_rggb_noisy_k, meta_data) in enumerate(train_loader):
-            inputs_rggb_noisy_k = inputs_rggb_noisy_k.permute(0, 3, 1, 2).to(device)
+        for batch_idx, (inputs_rggb, inputs_rggb_noisy, inputs_rggb_variance, meta_data) in enumerate(train_loader):
+            inputs_rggb_noisy = inputs_rggb_noisy.permute(0, 3, 1, 2).to(device)
             inputs_rggb = inputs_rggb.permute(0, 3, 1, 2).to(device)
-            
-            optimizer.zero_grad()
-            inp_scale = 256.0
-            inputs_rggb_noisy_k = inputs_rggb_noisy_k * inp_scale # strange magic number from run_benchmark.py
-            outputs = model(inputs_rggb_noisy_k.to(torch.float32))
-            outputs = outputs / inp_scale # strange magic number from run_benchmark.py
+            inputs_rggb_variance = inputs_rggb_variance.permute(0, 3, 1, 2).to(device)
 
-            iso = meta_data['iso'].item()
-            kSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
-            outputs = kSigmaCur(outputs, iso, inverse=True)
+            inputs_rggb_concat = torch.cat([inputs_rggb_noisy, inputs_rggb_variance], dim=1)  # concat noisy image and variance map
+            optimizer.zero_grad()
+            outputs = model(inputs_rggb_concat.to(torch.float32))
 
             loss = criterion(outputs, inputs_rggb)
             loss.backward()
@@ -116,9 +114,6 @@ def train():
 
             # evaluate
             if step % args.eval_step == 0:
-                # Evaluation each epoch
-                denoiser = Denoiser(model, kSigmaCur, device = device, inp_scale = inp_scale)
-                # PSNRtest_psnr s_bayer_denoise = []
                 test_loss = 0.0
                 test_psnr = 0 
                 example_images = []  # Store example images for visualization
@@ -130,9 +125,36 @@ def train():
                         bar.set_description(meta.name)
                         assert meta.bayer_pattern == 'BGGR'
                         input_bayer_01, gt_bayer_01 = RawUtils.bggr2rggb(input_bayer, gt_bayer)
-                        gt_bayer_01 = torch.from_numpy(np.ascontiguousarray(gt_bayer_01)).cuda(device)
-                        input_bayer_01 = torch.from_numpy(np.ascontiguousarray(input_bayer_01)).cuda(device)
-                        pred_bayer_01 = denoiser.run(input_bayer_01, iso=meta.ISO)
+                        input_bayer_01 = torch.from_numpy(np.ascontiguousarray(input_bayer_01)).to(device)
+                        gt_bayer_01 = torch.from_numpy(np.ascontiguousarray(gt_bayer_01)).to(device)
+
+                        # ----- bayer to rggb ----- #
+                        input_rggb_01 = RawUtils.bayer2rggb(input_bayer_01) 
+                        input_rggb_01 = input_rggb_01.unsqueeze(0)  # [1, H, W, 4]
+                        input_rggb_01 = input_rggb_01.permute(0, 3, 1, 2).to(device)
+
+                        # ----- padd to 32 multiple ----- #
+                        B, C, H, W = input_rggb_01.shape
+                        pad_h = (32 - H % 32) % 32
+                        pad_w = (32 - W % 32) % 32
+                        input_rggb_01 = torch.nn.functional.pad(input_rggb_01, (0, pad_w, 0, pad_h), mode='constant', value = 0)
+
+                        # ----- concat variance map ----- #
+                        k, sigma = KSigmaCur.GetKSigma(iso=meta.ISO)
+                        k = k / 1024
+                        sigma = sigma / 1024 / 1024
+                        # print("\n  test set: k:", k, " sigma:", sigma)
+                        variance_map = torch.sqrt(input_rggb_01 * k + sigma).to(torch.float32).to(device)
+                        input_rggb_01_concat = torch.cat([input_rggb_01.to(torch.float32), variance_map], dim=1)
+
+                        # ----- inference ----- #
+                        pred_rggb_01 = model(input_rggb_01_concat)[0]  # [B,4,H,W]
+
+                        # ----- depad ----- #
+                        pred_rggb_01 = pred_rggb_01[:, :H, :W]
+                        pred_bayer_01 = RawUtils.rggb2bayer(pred_rggb_01.permute(1, 2, 0))
+
+                        # ----- calc psnr ----- #
                         for x0, y0, x1, y1 in meta.ROIs:
                             # ----- raw ----- #
                             pred_patch_bayer_01 = pred_bayer_01[y0:y1, x0:x1]

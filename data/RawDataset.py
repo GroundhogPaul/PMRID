@@ -234,8 +234,85 @@ class PMRIDRawDataset(Dataset):
         return len(self.filenames)
 
 
+class TimBrooksRawDataset(PMRIDRawDataset):
+    def __init__(self, dir_pattern, height=1024, width=1024):
+        super().__init__(dir_pattern, height, width)
 
-def create_dataloader(dir_pattern, height, width, batch_size, num_workers=0):
+    def add_noise(self, input_bayer_01, noise_type='Gaussian'):
+        log_min_shot_noise = torch.log(torch.tensor(0.0001))
+        log_max_shot_noise = torch.log(torch.tensor(0.012))
+        log_shot_noise =  log_min_shot_noise + (log_max_shot_noise - log_min_shot_noise) * torch.rand(1)
+        shot_noise = torch.exp(log_shot_noise)
+
+        line = lambda x: 2.18 * x + 1.2
+        log_read_noise = line(log_shot_noise) + torch.normal(mean = 0.0, std = 0.26, size=())
+        read_noise = torch.exp(log_read_noise)
+
+        variance = input_bayer_01 * shot_noise + read_noise
+        noise = torch.randn_like(input_bayer_01) * torch.sqrt(variance)
+        
+
+        
+        # if noise_type == 'PoissonGaussian':
+            # Poisson and Gaussian noise model
+        #     shot_noise = torch.poisson(input_bayer / k) * k
+        #     read_noise = torch.randn(input_bayer.shape) * torch.sqrt(torch.tensor(sigma))
+        #     noisy_bayer = shot_noise + read_noise
+        
+        # elif noise_type == 'Gaussian':
+        #     # Gaussian noise model
+        #     variance = input_bayer * k + sigma
+        #     noise = torch.randn_like(input_bayer) * torch.sqrt(variance)
+        #     noisy_bayer = input_bayer + noise
+
+        # else:
+        #     noisy_bayer = input_bayer
+
+        noisy_bayer01 = input_bayer_01 + noise
+        return torch.clamp(noisy_bayer01.to(torch.float32), 0, 1), copy.deepcopy(shot_noise), copy.deepcopy(read_noise) 
+    
+    def __getitem__(self, index):
+        # read raw
+        # input_raw = rawpy.imread("D:/image_database/SID/SID/Sony/long/00002_00_10s.ARW")
+        input_raw = rawpy.imread(self.filenames[index])
+        white_level = input_raw.white_level
+        black_level = input_raw.black_level_per_channel[0]
+        bayer_pattern = input_raw.raw_pattern
+        input_bayer = input_raw.raw_image.astype(np.float32)
+        H, W = input_bayer.shape
+
+        wb_gain = np.array([wb / 1024.0 for wb in input_raw.camera_whitebalance]),
+        ccm = input_raw.rgb_xyz_matrix[:3, :]
+
+        # data transform          
+        input_bayer = self.random_crop_and_flip(input_bayer, bayer_pattern, H_crop=self.height, W_crop=self.width, p_flip_ud=0.5, p_flip_lr=0.5)
+        input_bayer_01 = input_bayer / white_level  # no black_level at all, copied from benchmark.py.BenchmarkLoader
+        # input_bayer_01 = (input_bayer - black_level) / (white_level - black_level)
+
+        # brightness and contrast augmentation
+        input_bayer_01 = RawArrayToTensor()(input_bayer_01)  # to [1, H, W] Tensor
+        input_bayer_01 = tvtransforms.ColorJitter(brightness=(0.2, 1.2), contrast=(0.5, 1.5))(input_bayer_01)
+        input_bayer_01 = torch.clamp(input_bayer_01, 0.0, 1.0)
+        input_rggb_01 = RawUtils.bayer_to_rggb(input_bayer_01, "RGGB")  # to [H/2, W/2, 4] RGGB
+
+        # add random noise
+        input_rggb_01_noisy, shot_noise, read_noise = self.add_noise(input_rggb_01)
+        input_bayer_01_noisy = RawUtils.rggb2bayer(input_rggb_01_noisy)
+        # rgb_noisy_01 = RawUtils.bayer01_2_rgb01(input_bayer_01_noisy.numpy(), wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3), gamma=2.2)
+        # cv2.imwrite("rgb_noisy_train.bmp", (rgb_noisy_01*255.0).astype(np.uint8))
+        # print("\n train set: shot_noise:", shot_noise.item(), " read_noise:", read_noise.item())
+        input_rggb_variance = torch.sqrt(input_rggb_01_noisy * shot_noise + read_noise)
+
+        # save meta data
+        meta_data = {
+            'black_level': input_raw.black_level_per_channel[0],
+            'wb_gain': wb_gain,
+            'ccm': ccm
+        }
+
+        return input_rggb_01, input_rggb_01_noisy, input_rggb_variance, meta_data
+
+def create_dataloader(dataset, batch_size, num_workers=0):
     """Creates a DataLoader for unprocessing training.
     
     Args:
@@ -248,8 +325,6 @@ def create_dataloader(dir_pattern, height, width, batch_size, num_workers=0):
     Returns:
         A PyTorch DataLoader instance.
     """
-    dataset = PMRIDRawDataset(dir_pattern, height, width)
-
     return DataLoader(
         dataset,
         batch_size=batch_size,
