@@ -5,65 +5,83 @@ import skimage
 import os
 import cv2
 from utilRaw import RawUtils
-from run_benchmark import KSigma, Denoiser
-from utilVrf import read_vrf, save_vrf_image, save_raw_image
+from run_benchmark import KSigma, Official_Ksigma_params, Denoiser
+from utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image
 from models.net_torch import NetworkPMRID as Network
 import torch
+import shutil
+import glob
+
+device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
+
+# ---------- read model ---------- #
+# ----- assert ckpt paths ----- #
+model_path, inp_scale =  "./models/PMRID_pretrain/top_models/torch_pretrained.ckp", 256
+# model_path, inp_scale =  "./models/PMRID_test/top_models/top_model_psnr_50.22_step_161000.pth", 256
+assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
+
+# ----- load ckpt ----- #
+net = Network().to(device)
+net.load_CKPT(str(model_path), device=torch.device(device))
+net.eval()
+
+# ----- output folder ----- #
+sModel_folder = os.path.dirname(os.path.dirname(model_path))
+sOut_folder = os.path.join(sModel_folder, 'denoise_vrf_out')
+os.makedirs(sOut_folder, exist_ok=True)
 
 # ---------- read vrf ---------- #
-# ----- assert paths ----- #
+# ----- glob and copy input vrf ----- #
 sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
 assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-sVrfFile = "53/0_unpacked.vrf"
-# sVrfFile = "33/5_unpacked.vrf"
-sVrfPath = os.path.join(sFolder, sVrfFile)
-assert os.path.exists(sVrfPath), f"VRF file does not exist: {sVrfPath}"
+idxVrf, ISO = 53, 6400
+vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
+assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
+assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
+sVrfPath = os.path.join(sFolder, vrf_files[0])
 
-# ----- read vrf ----- #
-W, H = 4080, 3060
+sVrfCpyName = f"{idxVrf}_noisy.vrf"
+sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
+shutil.copy(sVrfPath, sVrfCpyPath)
+
+# ----- read vrf info ----- #
+vrfCur = vrf(sVrfPath)
+ISO = vrfCur.m_ISO
+print(f"Using ISO: {ISO}")
+
+sVrfOutName = f"{idxVrf}_denoise.vrf"
+sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
+
 black_level = 64
 white_level = 1023
 dgain = 1.0
 
-bayer01_GRBG_noisy = read_vrf(sVrfPath, W, H, black_level, dgain, white_level)
+# ----- read vrf ----- #
+bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level)
 bayer01_RGGB_noisy = np.fliplr(bayer01_GRBG_noisy)
-bayer01_BGGR_noisy = RawUtils.rggb2bggr(bayer01_RGGB_noisy)
-
-bgr01_noisy = RawUtils.bayer01_2_rgb01(bayer01_BGGR_noisy, wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3))
-bgr_noisy = (bgr01_noisy*255.0).astype(np.uint8)
-cv2.imwrite("noisy_rgb.png", bgr_noisy)
+bayer01_RGGB_noisy = torch.from_numpy(np.ascontiguousarray(bayer01_RGGB_noisy)).cuda(device)
 
 # ---------- Denoise ---------- #
 kSigma = KSigma(
-    K_coeff=[0.0005995267, 0.00868861],
-    B_coeff=[7.11772e-7, 6.514934e-4, 0.11492713],
-    anchor=1600,
+    K_coeff=Official_Ksigma_params["K_coeff"],
+    B_coeff=Official_Ksigma_params["B_coeff"],
+    anchor=Official_Ksigma_params["anchor"]
 )
-
-device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
-model_path, inp_scale =  "D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/models/torch_pretrained.ckp", 256
-model_path, inp_scale =  "./models/PMRID_test/top_models/top_model_psnr_49.87_step_196001.pth", 1.0
-net = Network().to(device)
-net.load_CKPT(str(model_path), device=torch.device(device))
-# net.load_PTH(str(model_path), device=torch.device(device))
-net.eval()
 
 Denoiser = Denoiser(net, kSigma, device, inp_scale=inp_scale)
 
-bayer01_RGGB_noisy = torch.from_numpy(np.ascontiguousarray(bayer01_RGGB_noisy)).cuda(device)
-bayer01_RGGB_denoise = Denoiser.run(bayer01_RGGB_noisy, iso=6400.0)
+bayer01_RGGB_denoise = Denoiser.run(bayer01_RGGB_noisy, iso=ISO)
 bayer01_RGGB_denoise = bayer01_RGGB_denoise.cpu().numpy() 
 bayer01_RGGB_denoise = np.clip(bayer01_RGGB_denoise, 0.0, 1.0)
 
 # ---------- save image ---------- #
 # ----- save png ----- #
-bayer01_BGGR_denoise = RawUtils.rggb2bggr(bayer01_RGGB_denoise)
+# bayer01_BGGR_denoise = RawUtils.rggb2bggr(bayer01_RGGB_denoise)
+# bgr01_denoise = RawUtils.bayer01_2_rgb01(bayer01_BGGR_denoise, wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3))
+# bgr_denoise = (bgr01_denoise*255.0).astype(np.uint8)
+# cv2.imwrite("denoise_rgb.bmp", bgr_denoise)
 
-bgr01_denoise = RawUtils.bayer01_2_rgb01(bayer01_BGGR_denoise, wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3))
-bgr_denoise = (bgr01_denoise*255.0).astype(np.uint8)
-cv2.imwrite("denoise_rgb.bmp", bgr_denoise)
-
-# ----- cal psnr ----- #
+# ----- cal psnr to std ----- #
 # import skimage
 # psnr = skimage.metrics.peak_signal_noise_ratio(bgr_denoise, bgr_noisy)
 # print("psnr_bgr = ", psnr)
@@ -72,14 +90,14 @@ cv2.imwrite("denoise_rgb.bmp", bgr_denoise)
 # psnr = skimage.metrics.peak_signal_noise_ratio(bayer01_RGGB_denoise, bayer01_RGGB_noisy) 
 # print("psnr_bayer01 = ", psnr)
 
-bgr_denoise_std = cv2.imread("denoise_rgb_std.bmp")
-errNorm2 = np.linalg.norm(bgr_denoise.astype(np.float32) - bgr_denoise_std.astype(np.float32))
-print("errNorm2 = ", errNorm2)
+# bgr_denoise_std = cv2.imread("denoise_rgb_std.bmp")
+# errNorm2 = np.linalg.norm(bgr_denoise.astype(np.float32) - bgr_denoise_std.astype(np.float32))
+# print("errNorm2 = ", errNorm2)
 
 # ----- save vrf ----- #
 out_ratio = 4  #out 12bit
 out_black_level = black_level * out_ratio  # 根据实际情况调整
 out_white_level = (white_level + 1) * out_ratio - 1
 bayer01_GRBG_denoise = np.fliplr(bayer01_RGGB_denoise)
-denoised_image = save_raw_image(bayer01_GRBG_denoise, os.path.join("", '53.raw'), out_white_level, out_black_level)
-save_vrf_image(denoised_image, sVrfPath, os.path.join("", '53.vrf'), out_white_level)
+denoised_image = save_raw_image(bayer01_GRBG_denoise, sVrfOutPath.replace(".vrf", ".raw"), out_white_level, out_black_level)
+save_vrf_image(denoised_image, sVrfPath, sVrfOutPath, out_white_level)
