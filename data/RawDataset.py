@@ -1,9 +1,16 @@
+import sys
+import os
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)  # 插入开头，优先搜索
+
+import utilData
+import utilBasic
 import rawpy
 import imageio
 import glob
 import numpy as np
 import torch
-import utilBasic
 from utilRaw import RawUtils
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
@@ -15,6 +22,7 @@ import torchvision.transforms as tvtransforms
 import copy
 import cv2
 import math
+from utilBasic import print_gpu_memory_stats
 
 class NoiseProfile:
     Noise_model = 'Gaussian'                          #'Gaussian' or 'PoissonGaussian'
@@ -120,16 +128,30 @@ class RawArrayToTensor:
         return torch.from_numpy(arr).float().unsqueeze(0)  # [1, H, W]
 
 class PMRIDRawDataset(Dataset):
-    def __init__(self, dir_pattern, height=1024, width=1024):
+    def __init__(self, dir_pattern, height=1024, width=1024, bPreLoadAll=False, device='cpu'):
         self.filenames = glob.glob(dir_pattern) 
         self.height = height
         self.width = width
+        self.device = device
+
+        self.bPreLoadAll = bPreLoadAll
+        if self.bPreLoadAll:
+            self.preloaded_raw = []
+            self.preloaded_bayer_device = []
+            print("Dataset: preload all raw files to device: ", device, " begin.")
+            for idx in range(len(self.filenames)):
+                self.preloaded_raw.append(rawpy.imread(self.filenames[idx]))
+                self.preloaded_bayer_device.append(RawArrayToTensor()(self.preloaded_raw[-1].raw_image.astype(np.float32)).to(self.device))
+                if idx % 100 == 0:
+                    print(f"----- preload {idx+1}/{len(self.filenames)} raw files. -----")
+                    print_gpu_memory_stats(self.device)
+            print("Dataset: preload all raw files to device: ", device, " end.")
 
     def random_crop_and_flip(self, input_bayer:np.ndarray, bayer_pattern, H_crop=1024, W_crop=1024, p_flip_ud=0.5, p_flip_lr=0.5) -> np.ndarray:
         """
         Random flip and crop a bayter-patterned image, and normalize the bayer pattern to RGGB.
         """    
-        H, W = input_bayer.shape
+        B, H, W = input_bayer.shape
         
         if np.array_equal(bayer_pattern, [[0, 1], [3, 2]]):    #'RGGB'
             crop_x_offset, crop_y_offset = 0, 0
@@ -154,20 +176,21 @@ class PMRIDRawDataset(Dataset):
         crop_x_start = crop_x_start // 2 * 2 + crop_x_offset
         crop_y_start = crop_y_start // 2 * 2 + crop_y_offset
 
-        crop_bayer = input_bayer[crop_y_start:crop_y_start+H_crop, crop_x_start:crop_x_start+W_crop]
+        crop_bayer = input_bayer[..., crop_y_start:crop_y_start+H_crop, crop_x_start:crop_x_start+W_crop]
         
         if flip_lr:
-            crop_bayer = np.fliplr(crop_bayer)
+            crop_bayer = torch.flip(crop_bayer, dims=[2])
         if flip_ud:
-            crop_bayer = np.flipud(crop_bayer)
+            crop_bayer = torch.flip(crop_bayer, dims=[1])
         
         return crop_bayer
 
     def add_noise(self, input_bayer_01, noise_type='Gaussian'):
         iso = torch.randint(100, 6400, (1,))
         KSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
-        k, sigma = KSigmaCur.GetKSigma(iso)
 
+        iso = iso.item()
+        k, sigma = KSigmaCur.GetKSigma(iso)
         kSigmaCalibLevel = 959 # 1023 - black_level(64), copy from run_benchmark.py
         input_bayer = input_bayer_01 * kSigmaCalibLevel # to kSigma calibrate scale 
 
@@ -191,26 +214,38 @@ class PMRIDRawDataset(Dataset):
         return torch.clamp(noisy_bayer_01.to(torch.float32), 0, 1), copy.deepcopy(KSigmaCur)
     
     def __getitem__(self, index):
-        # read raw
         # input_raw = rawpy.imread("D:/image_database/SID/SID/Sony/long/00002_00_10s.ARW")
-        input_raw = rawpy.imread(self.filenames[index])
+        # read raw
+        if self.bPreLoadAll:
+            input_raw = self.preloaded_raw[index]
+            input_bayer = self.preloaded_bayer_device[index]
+        else:
+            input_raw = rawpy.imread(self.filenames[index])
+            input_bayer = input_raw.raw_image.astype(np.float32)
+            input_bayer = np.ascontiguousarray(input_bayer)
+            input_bayer = RawArrayToTensor()(input_bayer)
+            input_bayer = input_bayer.to(self.device)
+        bayer_pattern = input_raw.raw_pattern
         white_level = input_raw.white_level
         black_level = input_raw.black_level_per_channel[0]
-        bayer_pattern = input_raw.raw_pattern
-        input_bayer = input_raw.raw_image.astype(np.float32)
-        H, W = input_bayer.shape
+        B, H, W = input_bayer.shape
 
         wb_gain = np.array([wb / 1024.0 for wb in input_raw.camera_whitebalance]),
         ccm = input_raw.rgb_xyz_matrix[:3, :]
 
-        # data transform          
+        # ---------- data transform ---------- #         
         input_bayer = self.random_crop_and_flip(input_bayer, bayer_pattern, H_crop=self.height, W_crop=self.width, p_flip_ud=0.5, p_flip_lr=0.5)
+
+        # !!!!! TODO: the black level + jitter + noise is so wrong (with black level) !!!!!
+        # ----- black level and normalize ----- #
         input_bayer_01 = input_bayer / white_level  # no black_level at all, copied from benchmark.py.BenchmarkLoader
         # input_bayer_01 = (input_bayer - black_level) / (white_level - black_level)
 
-        # brightness and contrast augmentation
-        input_bayer_01 = RawArrayToTensor()(input_bayer_01)  # to [1, H, W] Tensor
-        input_bayer_01 = tvtransforms.ColorJitter(brightness=(0.2, 1.2), contrast=(0.5, 1.5))(input_bayer_01)
+        # ----- brightness and contrast augmentation ----- #
+        print(input_bayer_01.min(), input_bayer_01.max(), input_bayer_01.mean())
+        # input_bayer_01 = tvtransforms.ColorJitter(brightness=(0.2, 1.2), contrast=(0.5, 1.5))(input_bayer_01)
+        input_bayer_01 = tvtransforms.ColorJitter(brightness=(1.2, 1.2), contrast=(1.5, 1.5))(input_bayer_01)
+        print(input_bayer_01.min(), input_bayer_01.max(), input_bayer_01.mean())
         input_bayer_01 = torch.clamp(input_bayer_01, 0.0, 1.0)
         input_rggb_01 = RawUtils.bayer_to_rggb(input_bayer_01, "RGGB")  # to [H/2, W/2, 4] RGGB
 
@@ -235,51 +270,41 @@ class PMRIDRawDataset(Dataset):
 
 
 class TimBrooksRawDataset(PMRIDRawDataset):
-    def __init__(self, dir_pattern, height=1024, width=1024):
-        super().__init__(dir_pattern, height, width)
+    def __init__(self, dir_pattern, height=1024, width=1024, bPreLoadAll=False, device='cpu'):
+        super().__init__(dir_pattern, height, width, bPreLoadAll=bPreLoadAll, device=device)
 
     def add_noise(self, input_bayer_01, noise_type='Gaussian'):
         log_min_shot_noise = torch.log(torch.tensor(0.0001))
         log_max_shot_noise = torch.log(torch.tensor(0.012))
         log_shot_noise =  log_min_shot_noise + (log_max_shot_noise - log_min_shot_noise) * torch.rand(1)
-        shot_noise = torch.exp(log_shot_noise)
+        shot_noise = torch.exp(log_shot_noise).item()
 
         line = lambda x: 2.18 * x + 1.2
         log_read_noise = line(log_shot_noise) + torch.normal(mean = 0.0, std = 0.26, size=())
-        read_noise = torch.exp(log_read_noise)
+        read_noise = torch.exp(log_read_noise).item()
 
         variance = input_bayer_01 * shot_noise + read_noise
         noise = torch.randn_like(input_bayer_01) * torch.sqrt(variance)
         
-
-        
-        # if noise_type == 'PoissonGaussian':
-            # Poisson and Gaussian noise model
-        #     shot_noise = torch.poisson(input_bayer / k) * k
-        #     read_noise = torch.randn(input_bayer.shape) * torch.sqrt(torch.tensor(sigma))
-        #     noisy_bayer = shot_noise + read_noise
-        
-        # elif noise_type == 'Gaussian':
-        #     # Gaussian noise model
-        #     variance = input_bayer * k + sigma
-        #     noise = torch.randn_like(input_bayer) * torch.sqrt(variance)
-        #     noisy_bayer = input_bayer + noise
-
-        # else:
-        #     noisy_bayer = input_bayer
-
         noisy_bayer01 = input_bayer_01 + noise
         return torch.clamp(noisy_bayer01.to(torch.float32), 0, 1), copy.deepcopy(shot_noise), copy.deepcopy(read_noise) 
     
     def __getitem__(self, index):
         # read raw
-        # input_raw = rawpy.imread("D:/image_database/SID/SID/Sony/long/00002_00_10s.ARW")
-        input_raw = rawpy.imread(self.filenames[index])
+        if self.bPreLoadAll:
+            input_raw = self.preloaded_raw[index]
+            input_bayer = self.preloaded_bayer_device[index]
+        else:
+            input_raw = rawpy.imread(self.filenames[index])
+            # input_raw = rawpy.imread("D:/image_database/SID/SID/Sony/long/00002_00_10s.ARW") # test code
+            input_bayer = input_raw.raw_image.astype(np.float32)
+            input_bayer = np.ascontiguousarray(input_bayer)
+            input_bayer = RawArrayToTensor()(input_bayer)
+            input_bayer = input_bayer.to(self.device)
+        bayer_pattern = input_raw.raw_pattern
         white_level = input_raw.white_level
         black_level = input_raw.black_level_per_channel[0]
-        bayer_pattern = input_raw.raw_pattern
-        input_bayer = input_raw.raw_image.astype(np.float32)
-        H, W = input_bayer.shape
+        B, H, W = input_bayer.shape
 
         wb_gain = np.array([wb / 1024.0 for wb in input_raw.camera_whitebalance]),
         ccm = input_raw.rgb_xyz_matrix[:3, :]
@@ -288,9 +313,9 @@ class TimBrooksRawDataset(PMRIDRawDataset):
         input_bayer = self.random_crop_and_flip(input_bayer, bayer_pattern, H_crop=self.height, W_crop=self.width, p_flip_ud=0.5, p_flip_lr=0.5)
         input_bayer_01 = input_bayer / white_level  # no black_level at all, copied from benchmark.py.BenchmarkLoader
         # input_bayer_01 = (input_bayer - black_level) / (white_level - black_level)
+        # input_bayer_01 = (input_bayer - black_level) / white_level
 
         # brightness and contrast augmentation
-        input_bayer_01 = RawArrayToTensor()(input_bayer_01)  # to [1, H, W] Tensor
         input_bayer_01 = tvtransforms.ColorJitter(brightness=(0.2, 1.2), contrast=(0.5, 1.5))(input_bayer_01)
         input_bayer_01 = torch.clamp(input_bayer_01, 0.0, 1.0)
         input_rggb_01 = RawUtils.bayer_to_rggb(input_bayer_01, "RGGB")  # to [H/2, W/2, 4] RGGB
@@ -298,8 +323,6 @@ class TimBrooksRawDataset(PMRIDRawDataset):
         # add random noise
         input_rggb_01_noisy, shot_noise, read_noise = self.add_noise(input_rggb_01)
         input_bayer_01_noisy = RawUtils.rggb2bayer(input_rggb_01_noisy)
-        # rgb_noisy_01 = RawUtils.bayer01_2_rgb01(input_bayer_01_noisy.numpy(), wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3), gamma=2.2)
-        # cv2.imwrite("rgb_noisy_train.bmp", (rgb_noisy_01*255.0).astype(np.uint8))
         # print("\n train set: shot_noise:", shot_noise.item(), " read_noise:", read_noise.item())
         input_rggb_variance = torch.sqrt(input_rggb_01_noisy * shot_noise + read_noise)
 
@@ -337,16 +360,28 @@ def create_dataloader(dataset, batch_size, num_workers=0):
 
 if __name__ == "__main__":
     dir_pattern = "D:/image_database/SID/SID/Sony/long/*.ARW"
-    dataset = PMRIDRawDataset(dir_pattern)
+    # device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
+    device = 'cpu'
+    bPreLoadAll = False
+    np.random.seed(42)
+    # dataset = PMRIDRawDataset(dir_pattern, device=device, bPreLoadAll=bPreLoadAll)
+    dataset = TimBrooksRawDataset(dir_pattern, device=device, bPreLoadAll=bPreLoadAll)
     print(f"number of clean raw images for training:{len(dataset)}")
     input_rggb_01, input_rggb_01_noisy, input_rggb_01_noisy_k, meta_data = dataset[0]
-    input_rggb_01_denoise = (input_rggb_01_noisy_k - meta_data['cvt_b']) / meta_data['cvt_k']
-    print(f'cvt_b:{meta_data["cvt_b"]}, cvt_k:{meta_data["cvt_k"]}')
+    # input_rggb_01_denoise = (input_rggb_01_noisy_k - meta_data['cvt_b']) / meta_data['cvt_k']
+    # print(f'cvt_b:{meta_data["cvt_b"]}, cvt_k:{meta_data["cvt_k"]}')
+
+    input_rggb_01 = input_rggb_01.cpu().numpy()
+    input_rggb_01_noisy = input_rggb_01_noisy.cpu().numpy()
+    
+    wb_gain = meta_data["wb_gain"][0]
+    wb_gain = wb_gain[[0,1,2]]
+    CCM = meta_data["ccm"]
     
     rgb_clean = RawUtils.bayer01_2_rgb01(
-        RawUtils.rggb2bayer(input_rggb_01.numpy()), wb_gain=meta_data['wb_gain'], CCM=meta_data['ccm'], gamma=2.2)
+        RawUtils.rggb2bayer(input_rggb_01), wb_gain=wb_gain, CCM=CCM, gamma = 2.2)
     rgb_noisy = RawUtils.bayer01_2_rgb01(
-        RawUtils.rggb2bayer(input_rggb_01_noisy.numpy()), wb_gain=meta_data['wb_gain'], CCM=meta_data['ccm'], gamma=2.2)
+        RawUtils.rggb2bayer(input_rggb_01_noisy), wb_gain=wb_gain, CCM=CCM, gamma=2.2)
     
 
     # 保存为 JPEG 图像
@@ -355,7 +390,7 @@ if __name__ == "__main__":
 
     print("Image saved as output.jpg")
     
-    plot_noise_profile_curves()
+    # plot_noise_profile_curves()
     # input_raw.raw_image = np.uint16(input_rggb_noisy * 16383)
     # rgb_image = input_raw.postprocess()
     # imageio.imwrite('test.jpg', rgb_image)
