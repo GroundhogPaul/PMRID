@@ -11,7 +11,8 @@ import cv2
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data.RawDataset import create_dataloader, TimBrooksRawDataset, RawArrayToTensor 
+from data.RawDataset import create_dataloader
+from data.RawDatasetTimBrooks import TimBrooksRawDataset
 #from dataset_SID import create_dataloader
 from benchmark import BenchmarkLoader
 from run_benchmark import Denoiser, KSigma, Official_Ksigma_params
@@ -77,7 +78,7 @@ def train():
         print(f'training a new model from epoch:0')
 
 
-    dataset = TimBrooksRawDataset(args.train_pattern, args.image_size, args.image_size, bPreLoadAll=True, device=device)
+    dataset = TimBrooksRawDataset(args.train_pattern, args.image_size, args.image_size, bPreLoadAll=False, device=device)
     train_loader = create_dataloader(dataset, args.batch_size)
     # test_loader = create_dataloader(args.test_pattern, args.image_size, args.image_size, args.batch_size)
     import pathlib as Path
@@ -92,14 +93,15 @@ def train():
     top_models = defaultdict(list)
     os.makedirs(os.path.join(args.model_dir, 'top_models'), exist_ok=True)
 
-    nSaveRemain = 20
+    # Save first n train image 
+    nSaveRemain = 0
+    pathFolderNtrainImage = os.path.join(args.model_dir, 'First_N_train_image')
+    os.makedirs(pathFolderNtrainImage, exist_ok=True)
+
     for epoch in range(args.num_epochs): 
         model.train()
         start_time = time.time()
         for batch_idx, (inputs_rggb_gt, inputs_rggb_noisy, inputs_rggb_variance, meta_data) in enumerate(train_loader):
-            inputs_rggb_noisy = inputs_rggb_noisy.permute(0, 3, 1, 2).to(device)
-            inputs_rggb_gt = inputs_rggb_gt.permute(0, 3, 1, 2).to(device)
-            inputs_rggb_variance = inputs_rggb_variance.permute(0, 3, 1, 2).to(device)
 
             inputs_rggb_concat = torch.cat([inputs_rggb_noisy, inputs_rggb_variance], dim=1)  # concat noisy image and variance map
             optimizer.zero_grad()
@@ -109,22 +111,12 @@ def train():
             loss.backward()
             optimizer.step()
 
-
             if nSaveRemain > 0: # save the first nSaveRemain train image
                 # ----- prepare test images for log ----- #
-                input_rggb_train = inputs_rggb_noisy[0]
-                pred_rggb_train = outputs[0]
-                gt_rggb_train = inputs_rggb_gt[0]
-
-                # wb_gain = meta_data["wb_gain"][0][0,2,3]
-                wb_gain = meta_data["wb_gain"][0]
-                wb_gain = wb_gain[0, [0,1,2]]
-                CCM = meta_data["ccm"][0]
-
-                input_bayer01_train = RawUtils.rggb2bayer(input_rggb_train.permute(1, 2, 0))
-                input_rgb_train = RawUtils.bayer01_2_rgb01(input_bayer01_train.cpu().numpy(), gamma=2.2, wb_gain=wb_gain, CCM=CCM)
-                input_bgr_train = cv2.cvtColor(input_rgb_train, cv2.COLOR_RGB2BGR)
-                cv2.imwrite(f"{nSaveRemain}_dump_test.jpg", (input_bgr_train*255.0).astype(np.uint8))
+                noisy_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_noisy, meta_data, 0)
+                cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_Noisy.jpg"), noisy_bgr888)
+                gt_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_gt, meta_data, 0)
+                cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_GT.jpg"), gt_bgr888)
 
                 nSaveRemain -= 1
 
@@ -135,7 +127,9 @@ def train():
             
         # evaluate
         if epoch % args.eval_epoch == 0:
-            # ----- evaluate ----- #
+            # ----- save train image ----- #
+            # TODO
+            # ----- evaluate and save evaluate immage ----- #
             test_loss = 0.0
             test_psnr = 0 
             example_images = []  # Store example images for visualization
@@ -197,8 +191,8 @@ def train():
                         inputs_test = (inputs_test*255.0).astype(np.uint8)
                         outputs_test = (outputs_test*255.0).astype(np.uint8)
                         # cv2.imwrite("gt_rgb_from_benchmark.bmp", labels_test)
-                        # cv2.imwrite("noisy_rgb_from_benchmark.bmp", inputs_test)
-                        # cv2.imwrite("denoised_rgb_from_benchmark.bmp", outputs_test)
+                        cv2.imwrite("noisy_rgb_from_benchmark.bmp", inputs_test)
+                        cv2.imwrite("denoised_rgb_from_benchmark.bmp", outputs_test)
                         pred_bayer_01
                         example_images.append({
                             'noisy_test': inputs_test,  # batch
@@ -222,7 +216,6 @@ def train():
                                 global_step = epoch) 
 
             # ----- log train images ----- #
-
 
                 
             # torch.save(model.state_dict(), f'{args.model_dir}/model_{epoch}.pth')
