@@ -99,7 +99,7 @@ class TimBrooksRawDataset(PMRIDRawDataset):
         input_rggb = input_rggb.permute(1, 2, 0).to('cpu')
 
         if hasattr(input_rggb, 'permute'):    # Pytorch
-            input_rggb = input_rggb.cpu().numpy()
+            input_rggb = input_rggb.detach().cpu().numpy()
         elif hasattr(input_rggb, 'shape'):      # Numpy
             pass
         else:
@@ -107,10 +107,10 @@ class TimBrooksRawDataset(PMRIDRawDataset):
 
         wb_gain = meta_data["wb_gain"][idx]
         if hasattr(wb_gain, 'permute'):    # Pytorch
-            wb_gain = wb_gain.numpy()
+            wb_gain = wb_gain.detach().numpy()
         CCM = meta_data["ccm"][idx]
         if hasattr(CCM, 'permute'):    # Pytorch
-            CCM = CCM.numpy()
+            CCM = CCM.detach().numpy()
     
         input_rgb = RawUtils.bayer01_2_rgb01(
             RawUtils.rggb2bayer(input_rggb), wb_gain=wb_gain, CCM=CCM, gamma = 2.2)
