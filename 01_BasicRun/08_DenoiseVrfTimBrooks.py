@@ -16,9 +16,9 @@ from PlotAgainShotRead import interpolate_gain_var
 # ---------- read model ---------- #
 # ----- assert ckpt paths ----- #
 # model_path =  "./models/TIM_BROOKS_test/top_models/top_model_psnr_50.13_epoch_3910.pth"
-# model_path =  "./models/TIM_BROOKS_test_AsMuchBlc/top_models/top_model_psnr_50.30_epoch_7180.pth"
+model_path =  "./models/TIM_BROOKS_test_AsMuchBlc/top_models/top_model_psnr_50.30_epoch_7180.pth"
 # model_path =  "./models/TIM_BROOKS_test_AsMuchBlc_AWB/top_models/top_model_psnr_49.74_epoch_530.pth"
-model_path =  "./models/TIM_BROOKS_test_AsMuchBlc_NegativeGT/top_models/lateset_model_psnr_0.00_epoch_7400.pth"
+# model_path =  "./models/TIM_BROOKS_test_AsMuchBlc_NegativeGT/top_models/lateset_model_psnr_0.00_epoch_7400.pth"
 assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
 
 # ----- get model name -----
@@ -71,47 +71,43 @@ dgain = 1.0
 
 # ----- read vrf ----- #
 # bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level)
-bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, 0, dgain, white_level)
-bayer01_RGGB_noisy = np.fliplr(bayer01_GRBG_noisy)
-bayer01_RGGB_noisy = torch.from_numpy(np.ascontiguousarray(bayer01_RGGB_noisy)).cuda(device)
-bayer_RGGB_noisy = bayer01_RGGB_noisy - blc01
+noisy_bayerGRBG = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, 0, dgain, white_level)
+noisy_bayerRGGB = np.fliplr(noisy_bayerGRBG)
+noisy_bayerRGGB = torch.from_numpy(np.ascontiguousarray(noisy_bayerRGGB)).cuda(device)
+noisy_bayerRGGB = noisy_bayerRGGB - blc01
 
-Wmin, Hmin = 2628, 1010
-Wmax, Hmax = 2634, 1015
+Hmin, Hmax = 1010, 1015
+Wmin, Wmax = 2628, 2634
 # print(bayer_RGGB_noisy[Hmin:Hmax+1, Wmin:Wmax+1])
-print(bayer_RGGB_noisy.min())
-print(bayer_RGGB_noisy.max())
+print(noisy_bayerRGGB.min(), noisy_bayerRGGB.max())
 
 # ---------- Denoise ---------- #
 # ----- padd to 32 multiple ----- #
-input_rggb = RawUtils.bayer2rggb(bayer_RGGB_noisy)
+noisy_rggb = RawUtils.bayer2rggb(noisy_bayerRGGB)
 
-input_rggb = input_rggb.permute(2, 0, 1).unsqueeze(0)  # [1,4,H,W]
+noisy_rggb = noisy_rggb.permute(2, 0, 1).unsqueeze(0)  # [1,4,H,W]
 
-B, C, H, W = input_rggb.shape
+B, C, H, W = noisy_rggb.shape
 pad_h = (32 - H % 32) % 32
 pad_w = (32 - W % 32) % 32
-input_rggb = torch.nn.functional.pad(input_rggb, (0, pad_w, 0, pad_h), mode='constant', value = 0)
+noisy_rggb = torch.nn.functional.pad(noisy_rggb, (0, pad_w, 0, pad_h), mode='constant', value = 0)
 
 # ----- get variance map and concate ----- #
 sFileGain = "D:/image_database/jn1_mfnr_bestshot/gain.txt"
 sFileVar = "D:/image_database/jn1_mfnr_bestshot/var.txt"
 
-SensorGain = np.clip(1024 / 16 * 0.38, 1, 64)
+SensorGain = np.clip(SensorGain / 16 * 0.38, 1, 64)
 sigShot, sigRead = interpolate_gain_var(file_gain = sFileGain, file_var = sFileVar, TGain = SensorGain)
 print("sigShot = ", sigShot, ", sigRead = ", sigRead)
-variance_map = torch.sqrt(torch.clamp(input_rggb, 0, 1) * sigShot + sigRead).to(torch.float32).to(device)
-input_rggb_01_concat = torch.cat([input_rggb.to(torch.float32), variance_map], dim=1)
+var_rggb = torch.sqrt(torch.clamp(noisy_rggb, 0, 1) * sigShot + sigRead).to(torch.float32).to(device)
+concat_rggb = torch.cat([noisy_rggb.to(torch.float32), var_rggb], dim=1)
 
 # ----- forward ----- #
-pred_rggb_01 = net(input_rggb_01_concat)[0]  # [B,4,H,W]
+pred_rggb = net(concat_rggb)[0]  # [B,4,H,W]
 
 # ----- depad ----- #
-pred_rggb_01 = pred_rggb_01[:, :H, :W]
-pred_bayer_01 = RawUtils.rggb2bayer(pred_rggb_01.permute(1, 2, 0)).detach().cpu().numpy()
-
-print(pred_bayer_01[Hmin:Hmax+1, Wmin:Wmax+1])
-
+pred_rggb = pred_rggb[:, :H, :W]
+pred_bayerRGGB = RawUtils.rggb2bayer(pred_rggb.permute(1, 2, 0)).detach().cpu().numpy()
 
 # ---------- save image ---------- #
 # ----- save png ----- #
@@ -137,8 +133,7 @@ print(pred_bayer_01[Hmin:Hmax+1, Wmin:Wmax+1])
 out_ratio = 4  #out 12bit
 out_black_level = black_level * out_ratio  # 根据实际情况调整
 out_white_level = (white_level + 1) * out_ratio - 1
-bayer01_GRBG_denoise = np.fliplr(pred_bayer_01)
+pred_bayerGRBG = np.fliplr(pred_bayerRGGB)
 # bayer01_GRBG_denoise = np.clip(bayer01_GRBG_denoise, 0, 1)
-bayer01_GRBG_denoise = bayer01_GRBG_denoise
-denoised_image = save_raw_image(bayer01_GRBG_denoise, sVrfOutPath.replace(".vrf", ".raw"), out_white_level, out_black_level)
+denoised_image = save_raw_image(pred_bayerGRBG, sVrfOutPath.replace(".vrf", ".raw"), out_white_level, out_black_level)
 save_vrf_image(denoised_image, sVrfPath, sVrfOutPath, out_white_level)
