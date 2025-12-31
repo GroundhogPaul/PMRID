@@ -11,7 +11,7 @@ from models.net_torch import NetworkTimBrooks as Network
 import torch
 import shutil
 import glob
-from PlotAgainShotRead import interpolate_gain_var
+from PlotAgainShotRead import interpolate_gain_var, GetJin1ShotAndReadVar
 
 # ---------- read model ---------- #
 # ----- assert ckpt paths ----- #
@@ -64,8 +64,8 @@ print(f"Using ISO: {ISO}, SensorGain: {SensorGain}")
 sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_denoise.vrf"
 sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
 
-black_level = 64
-white_level = 1023
+black_level = vrfCur.m_BlackLevel
+white_level = vrfCur.m_WhiteLevel 
 blc01 = float(black_level) / white_level
 dgain = 1.0
 
@@ -92,42 +92,27 @@ pad_h = (32 - H % 32) % 32
 pad_w = (32 - W % 32) % 32
 noisy_rggb = torch.nn.functional.pad(noisy_rggb, (0, pad_w, 0, pad_h), mode='constant', value = 0)
 
-# ----- get variance map and concate ----- #
-sFileGain = "D:/image_database/jn1_mfnr_bestshot/gain.txt"
-sFileVar = "D:/image_database/jn1_mfnr_bestshot/var.txt"
+# ---------- get variance map and concate ---------- #
+# ----- Get Sigma: CJ method ----- #
+# sFileGain = "D:/image_database/jn1_mfnr_bestshot/gain.txt"
+# sFileVar = "D:/image_database/jn1_mfnr_bestshot/var.txt"
+# SensorGain = np.clip(SensorGain * 0.38, 1, 64)
+# varShot, varRead = interpolate_gain_var(file_gain = sFileGain, file_var = sFileVar, TGain = SensorGain)
 
-SensorGain = np.clip(SensorGain / 16 * 0.38, 1, 64)
-sigShot, sigRead = interpolate_gain_var(file_gain = sFileGain, file_var = sFileVar, TGain = SensorGain)
-print("sigShot = ", sigShot, ", sigRead = ", sigRead)
-var_rggb = torch.sqrt(torch.clamp(noisy_rggb, 0, 1) * sigShot + sigRead).to(torch.float32).to(device)
+# ----- Get Sigma: LW method ----- #
+varShot, varRead = GetJin1ShotAndReadVar(SensorGain)
+
+# ----- cal var and concat ----- #
+print("varShot = ", varShot, ", varRead = ", varRead)
+var_rggb = torch.sqrt(torch.clamp(noisy_rggb, 0, 1) * varShot + varRead).to(torch.float32).to(device)
 concat_rggb = torch.cat([noisy_rggb.to(torch.float32), var_rggb], dim=1)
 
-# ----- forward ----- #
+# --------- forward --------- #
 pred_rggb = net(concat_rggb)[0]  # [B,4,H,W]
 
 # ----- depad ----- #
 pred_rggb = pred_rggb[:, :H, :W]
 pred_bayerRGGB = RawUtils.rggb2bayer(pred_rggb.permute(1, 2, 0)).detach().cpu().numpy()
-
-# ---------- save image ---------- #
-# ----- save png ----- #
-# bayer01_BGGR_denoise = RawUtils.rggb2bggr(pred_bayer_01)
-# bgr01_denoise = RawUtils.bayer01_2_rgb01(bayer01_BGGR_denoise, wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3))
-# bgr_denoise = (bgr01_denoise*255.0).astype(np.uint8)
-# cv2.imwrite("denoise_rgb.bmp", bgr_denoise)
-
-# ----- cal psnr ----- #
-# import skimage
-# psnr = skimage.metrics.peak_signal_noise_ratio(bgr_denoise, bgr_noisy)
-# print("psnr_bgr = ", psnr)
-# print(bayer01_RGGB_denoise.min(), bayer01_RGGB_denoise.max())
-# print(bayer01_RGGB_noisy.min(), bayer01_RGGB_noisy.max())
-# psnr = skimage.metrics.peak_signal_noise_ratio(bayer01_RGGB_denoise, bayer01_RGGB_noisy) 
-# print("psnr_bayer01 = ", psnr)
-
-# bgr_denoise_std = cv2.imread("denoise_rgb_std.bmp")
-# errNorm2 = np.linalg.norm(bgr_denoise.astype(np.float32) - bgr_denoise_std.astype(np.float32))
-# print("errNorm2 = ", errNorm2)
 
 # ----- save vrf ----- #
 out_ratio = 4  #out 12bit

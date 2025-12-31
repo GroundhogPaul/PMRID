@@ -41,12 +41,11 @@ sOut_folder = os.path.join(sModel_folder, 'denoise_vrf_out_modify')
 os.makedirs(sOut_folder, exist_ok=True)
 
 # ---------- read vrf ---------- #
-# ----- glob and copy input vrf ----- #
+# ----- read 'clean' vrf from Golden 4T inference result ----- #
 sFolder = r"D:\users\xiaoyaopan\PxyAI\PMRID_OFFICIAL\PMRID\models\golden_4T"
 assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
 idxVrf = 53
 # idxVrf = 33
-# idxVrf = 1
 vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}_AI_Denoise.vrf"))
 assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
 assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
