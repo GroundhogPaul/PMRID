@@ -14,31 +14,7 @@ import shutil
 import glob
 from PlotAgainShotRead import interpolate_gain_var, GetJin1ShotAndReadVar
 
-# ---------- read model ---------- #
-# ----- assert ckpt paths ----- #
-# model_path =  "./models/TIM_BROOKS_test/top_models/top_model_psnr_50.13_epoch_3910.pth"
-model_path =  "./models/TIM_BROOKS_test_AsMuchBlc/top_models/top_model_psnr_50.30_epoch_7180.pth"
-# model_path =  "./models/TIM_BROOKS_test_AsMuchBlc_AWB/top_models/top_model_psnr_49.74_epoch_530.pth"
-# model_path =  "./models/TIM_BROOKS_test_AsMuchBlc_NegativeGT/top_models/lateset_model_psnr_0.00_epoch_7400.pth"
-assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
-
-# ----- get model name -----
-path_parts = model_path.split('/')
-models_index = path_parts.index('models')
-sImgSuffix = path_parts[models_index + 1]
-print("sImgSuffix = ", sImgSuffix)
-assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
-
-# ----- load ckpt ----- #
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-net = Network().to(device)
-net.load_CKPT(str(model_path), device=torch.device(device))
-net.eval()
-
-# ----- output folder ----- #
-sModel_folder = os.path.dirname(os.path.dirname(model_path))
-sOut_folder = os.path.join(sModel_folder, 'denoise_vrf_out_modify')
-os.makedirs(sOut_folder, exist_ok=True)
 
 # ---------- read vrf ---------- #
 # ----- read 'clean' vrf from Golden 4T inference result ----- #
@@ -75,11 +51,6 @@ clean_bayerGRBG = torch.from_numpy(np.ascontiguousarray(clean_bayerGRBG)).cuda(d
 clean_bayerGRBG = clean_bayerGRBG - blc01
 clean_bayerGRBG = torch.clamp(clean_bayerGRBG, 0.0, 1.0)
 
-# Hmin, Hmax = 1010, 1015
-# Wmin, Wmax = 2628, 2634
-# # print(bayer_RGGB_noisy[Hmin:Hmax+1, Wmin:Wmax+1])
-# print(clean_bayerGRBG.min(), clean_bayerGRBG.max())
-
 # ---------- Add noise ---------- #
 # ----- Get Sigma: CJ method ----- #
 # sFileGain = "D:/image_database/jn1_mfnr_bestshot/gain.txt"
@@ -89,29 +60,10 @@ clean_bayerGRBG = torch.clamp(clean_bayerGRBG, 0.0, 1.0)
 # var_shot, var_read = interpolate_gain_var(file_gain = sFileGain, file_var = sFileVar, TGain = SensorGain)
 
 # ----- Get Sigma: LW method ----- #
-# if SensorGain>= 4.0:
-#     line = lambda x: 4.675e-05 * x + 0.0003418
-#     #  read_noise = line(AGain) + np.random_normal((), stddev=1.478*1.127e-05)
-#     sig_read = line(SensorGain)# + np.random_normal((), stddev=1.478*1.127e-05)
-#     sig_read = np.clip(sig_read, 0.0, 65535.0)
-#     var_read = sig_read*sig_read
-# else:
-#     line = lambda x: 0.0001822 * x + 0.0003203
-#     #  read_noise = line(AGain) + np.random_normal((), stddev=1.478*8.387e-06)
-#     read_noise = line(SensorGain)# + np.random_normal((), stddev=1.478*8.387e-06)
-#     read_noise = np.clip(read_noise, 0.0, 65535.0)
-#     read_noise = read_noise*read_noise
-# line = lambda x: 3.674e-05 * x
-# # shot_noise = line(AGain) + np.random_normal((), stddev=5.007*1.021e-05)
-# var_shot = line(SensorGain) # + np.random_normal((), stddev=5.007*1.021e-05)
-# var_shot = np.clip(var_shot, 0.0, 65535.0)
 var_shot, var_read = GetJin1ShotAndReadVar(SensorGain)
-
 print("var_read = ", var_read, ", var_shot = ", var_shot)
-# ----- 
-# print(clean_bayerGRBG.min().item())
-# print(clean_bayerGRBG.max().item())
 
+# ---- add noise ----- #
 seed = 42
 torch.manual_seed(seed)
 np.random.seed(seed)
@@ -127,6 +79,30 @@ noisy_image = save_raw_image(noisy_bayerGRBG_save.detach().cpu().numpy(), "test.
 save_vrf_image(noisy_image, sVrfPath, f"{idxVrf}_AddNoise.vrf", white_level)
 
 # ---------- Denoise ---------- #
+# ----- read model ----- #
+# model_path =  "./models/TIM_BROOKS_test/top_models/top_model_psnr_50.13_epoch_3910.pth"
+model_path =  "./models/TIM_BROOKS_test_AsMuchBlc/top_models/top_model_psnr_50.30_epoch_7180.pth"
+# model_path =  "./models/TIM_BROOKS_test_AsMuchBlc_AWB/top_models/top_model_psnr_49.74_epoch_530.pth"
+# model_path =  "./models/TIM_BROOKS_test_AsMuchBlc_NegativeGT/top_models/lateset_model_psnr_0.00_epoch_7400.pth"
+assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
+
+# ----- get model name -----
+path_parts = model_path.split('/')
+models_index = path_parts.index('models')
+sImgSuffix = path_parts[models_index + 1]
+print("sImgSuffix = ", sImgSuffix)
+assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
+
+# ----- load ckpt ----- #
+net = Network().to(device)
+net.load_CKPT(str(model_path), device=torch.device(device))
+net.eval()
+
+# ----- output folder ----- #
+sModel_folder = os.path.dirname(os.path.dirname(model_path))
+sOut_folder = os.path.join(sModel_folder, 'denoise_vrf_out_modify')
+os.makedirs(sOut_folder, exist_ok=True)
+
 noisy_bayerRGGB = torch.fliplr(noisy_bayerGRBG)
 # ----- padd to 32 multiple ----- #
 noisy_rggb = RawUtils.bayer2rggb(noisy_bayerRGGB)
