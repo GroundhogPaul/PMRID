@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import torch
 import torch.nn as nn
+from thop import profile
+from torchinfo import summary
 from collections import OrderedDict
 
 import numpy as np
@@ -249,14 +251,18 @@ class NetworkGolden4T(NetworkBasic):
 
         self.conv0 = nn.Conv2d(8, 32, kernel_size=3, stride=1, padding=1, bias=True)
         self.act = nn.LeakyReLU()
-        self.ds = nn.MaxPool2d()
-        self.us = nn.UpsamplingBilinear2d()
+        self.ds = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.us = nn.UpsamplingBilinear2d(scale_factor=2)
 
         self.Encoder1 = nn.Conv2d(32, 32, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Encoder2a = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1, bias=True)
         self.Encoder2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Encoder3a = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1, bias=True)
         self.Encoder3 = nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Encoder4a = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1, bias=True)
         self.Encoder4 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=True)
 
+        self.Encoder5a = nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1, bias=True)
         self.Decoder5 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1, bias=True)
 
         self.Decoder4a = nn.Conv2d(512+256, 256, kernel_size=3, stride=1, padding=1, bias=True)
@@ -279,51 +285,51 @@ class NetworkGolden4T(NetworkBasic):
         Encoder1C = self.act(self.Encoder1(Encoder1B))
         Encoder1D = self.act(self.Encoder1(Encoder1C))
 
-        Encoder2A = self.act(self.Encoder2(self.ds(Encoder1D)))
+        Encoder2A = self.act(self.Encoder2a(self.ds(Encoder1D)))
         Encoder2B = self.act(self.Encoder2(Encoder2A))
         Encoder2C = self.act(self.Encoder2(Encoder2B))
         Encoder2D = self.act(self.Encoder2(Encoder2C))
 
-        Encoder3A = self.act(self.Encoder3(self.ds(Encoder2D)))
+        Encoder3A = self.act(self.Encoder3a(self.ds(Encoder2D)))
         Encoder3B = self.act(self.Encoder3(Encoder3A))
         Encoder3C = self.act(self.Encoder3(Encoder3B))
         Encoder3D = self.act(self.Encoder3(Encoder3C))
 
-        Encoder4A = self.act(self.Encoder4(self.ds(Encoder3D)))
+        Encoder4A = self.act(self.Encoder4a(self.ds(Encoder3D)))
         Encoder4B = self.act(self.Encoder4(Encoder4A))
         Encoder4C = self.act(self.Encoder4(Encoder4B))
         Encoder4D = self.act(self.Encoder4(Encoder4C))
 
-        Decoder5A = self.act(self.Decoder5(self.ds(Encoder4D)))
+        Decoder5A = self.act(self.Encoder5a(self.ds(Encoder4D)))
         Decoder5B = self.act(self.Decoder5(Decoder5A))
         Decoder5C = self.act(self.Decoder5(Decoder5B))
         Decoder5D = self.act(self.Decoder5(Decoder5C))
-        Decoder5Dus = np.concatenate(Encoder4D, self.us(Decoder5D), axis=1)
+        Decoder5Dus = torch.cat([Encoder4D, self.us(Decoder5D)], dim=1)
 
         Decoder4A = self.act(self.Decoder4a(Decoder5Dus))
         Decoder4B = self.act(self.Decoder4(Decoder4A))
         Decoder4C = self.act(self.Decoder4(Decoder4B))
         Decoder4D = self.act(self.Decoder4(Decoder4C))
-        Decoder4Dus = np.concatenate(Encoder3D, self.us(Decoder4D), axis=1)
+        Decoder4Dus = torch.cat([Encoder3D, self.us(Decoder4D)], dim=1)
 
         Decoder3A = self.act(self.Decoder3a(Decoder4Dus))
         Decoder3B = self.act(self.Decoder3(Decoder3A))
         Decoder3C = self.act(self.Decoder3(Decoder3B))
         Decoder3D = self.act(self.Decoder3(Decoder3C))
-        Decoder3Dus = np.concatenate(Encoder2D, self.us(Decoder3D), axis=1)
+        Decoder3Dus = torch.cat([Encoder2D, self.us(Decoder3D)], dim=1)
 
         Decoder2A = self.act(self.Decoder2a(Decoder3Dus))
         Decoder2B = self.act(self.Decoder2(Decoder2A))
         Decoder2C = self.act(self.Decoder2(Decoder2B))
         Decoder2D = self.act(self.Decoder2(Decoder2C))
-        Decoder2Dus = np.concatenate(Encoder1D, self.us(Decoder2D), axis=1)
+        Decoder2Dus = torch.cat([Encoder1D, self.us(Decoder2D)], axis=1)
 
         Decoder1A = self.act(self.Decoder1a(Decoder2Dus))
         Decoder1B = self.act(self.Decoder1(Decoder1A))
         Decoder1C = self.act(self.Decoder1(Decoder1B))
         Decoder1D = self.act(self.Decoder1(Decoder1C))
 
-        Pred = self.act(self.ConvZ(Decoder1D)) + noisyConcat[:, :4, :, :]
+        Pred = self.act(self.convZ(Decoder1D)) + noisyConcat[:, :4, :, :]
 
         return Pred
 
@@ -371,11 +377,13 @@ class NetworkSingleNoise(NetworkBasic):
     
 
 if __name__ == "__main__":
-    net = NetworkPMRID()
-    # img = mge.tensor(np.random.randn(1, 4, 64, 64).astype(np.float32))
-    img = torch.randn(1, 4, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
-    out = net(img)
+    # net, img = NetworkPMRID(), torch.randn(1, 4, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
+    net, img = NetworkTimBrooks(), torch.randn(1, 8, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
+    # net, img = NetworkGolden4T(), torch.randn(1, 8, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
+    # out = net(img)
 
-    # import IPython; IPython.embed()
-
-# vim: ts=4 sw=4 sts=4 expandtab
+    # summary(net, input_size=(1, 8, 64, 64))
+    flops, params = profile(net, inputs=(img,))
+    gflops = flops/1e9
+    imgSizeM = img.shape[2]*img.shape[3]*4/1e6
+    print(f"FLOPs: {gflops:.2f}G, Params: {params/1e6:.2f}M, gFlops per 1M pixel = {gflops/imgSizeM:.2f}G")
