@@ -7,15 +7,15 @@ import cv2
 from utilRaw import RawUtils
 from run_benchmark import KSigma, Official_Ksigma_params
 from utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image 
-from models.net_torch import NetworkTimBrooks as Network
+from models.net_torch import NetworkSingleNoise as Network
 import torch
 import shutil
 import glob
 from PlotAgainShotRead import interpolate_gain_var, GetJin1ShotAndReadVar
 
 
-# ---------- Denoise ---------- #
-def Denoiser(noisy_bayerRGGB, device, SensorGain):
+def Denoiser(noisy_bayerRGGB, net):
+    device = next(net.parameters()).device
     if hasattr(noisy_bayerRGGB, 'permute'):    # Pytorch
         noisy_bayerRGGB = noisy_bayerRGGB.cuda(device)
     elif hasattr(noisy_bayerRGGB, 'shape'):      # Numpy
@@ -32,16 +32,8 @@ def Denoiser(noisy_bayerRGGB, device, SensorGain):
     pad_w = (32 - W % 32) % 32
     noisy_rggb = torch.nn.functional.pad(noisy_rggb, (0, pad_w, 0, pad_h), mode='constant', value = 0)
 
-    # ----- Get Sigma: LW method ----- #
-    varShot, varRead = GetJin1ShotAndReadVar(SensorGain)
-
-    # ----- cal var and concat ----- #
-    print("varShot = ", varShot, ", varRead = ", varRead)
-    var_rggb = torch.sqrt(torch.clamp(noisy_rggb, 0, 1) * varShot + varRead).to(torch.float32).to(device)
-    concat_rggb = torch.cat([noisy_rggb.to(torch.float32), var_rggb], dim=1)
-
     # --------- forward --------- #
-    pred_rggb = net(concat_rggb)[0]  # [B,4,H,W]
+    pred_rggb = net(noisy_rggb)[0]  # [B,4,H,W]
 
     # ----- depad ----- #
     pred_rggb = pred_rggb[:, :H, :W]
@@ -49,15 +41,13 @@ def Denoiser(noisy_bayerRGGB, device, SensorGain):
 
     return pred_bayerRGGB
 
-def DenoiserVrf(sVrfPath, sVrfOutPath):
+def DenoiserVrf(sVrfPath, sVrfOutPath, net):
     # ----- read vrf info ----- #
     vrfCur = vrf(sVrfPath)
     ISO = vrfCur.m_ISO
     SensorGain = vrfCur.m_nSensorGain
     print(f"Using ISO: {ISO}, SensorGain: {SensorGain}")
 
-    sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_denoise.vrf"
-    sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
 
     black_level = vrfCur.m_BlackLevel
     white_level = vrfCur.m_WhiteLevel 
@@ -65,13 +55,10 @@ def DenoiserVrf(sVrfPath, sVrfOutPath):
     dgain = 1.0
 
     # ----- read vrf ----- #
-    # bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level)
     noisy_bayerGRBG = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, 0, dgain, white_level)
     noisy_bayerRGGB = np.fliplr(noisy_bayerGRBG)
-    noisy_bayerRGGB = torch.from_numpy(np.ascontiguousarray(noisy_bayerRGGB)).cuda(device)
-    noisy_bayerRGGB = noisy_bayerRGGB - blc01
 
-    pred_bayerRGGB = Denoiser(noisy_bayerRGGB, device, SensorGain)
+    pred_bayerRGGB = Denoiser(noisy_bayerRGGB, net)
 
     # ----- save vrf ----- #
     out_ratio = 4  #out 12bit
@@ -79,16 +66,15 @@ def DenoiserVrf(sVrfPath, sVrfOutPath):
     out_white_level = (white_level + 1) * out_ratio - 1
     pred_bayerGRBG = np.fliplr(pred_bayerRGGB)
     # bayer01_GRBG_denoise = np.clip(bayer01_GRBG_denoise, 0, 1)
-    denoised_image = save_raw_image(pred_bayerGRBG, sVrfOutPath.replace(".vrf", ".raw"), out_white_level, out_black_level)
+    denoised_image = save_raw_image(pred_bayerGRBG, sVrfOutPath.replace(".vrf", ".raw"), out_white_level, 0)
     save_vrf_image(denoised_image, sVrfPath, sVrfOutPath, out_white_level)
-
-    return
 
 if __name__ == '__main__':
     # ---------- read model ---------- #
     # ----- assert ckpt paths ----- #
-    model_path =  "./models/TIM_BROOKS_test_AsMuchBlc/top_models/top_model_psnr_50.30_epoch_7180.pth"
-    # model_path =  "./models/TIM_BROOKS_test_AsMuchBlc2/top_models/lateset_model_psnr_0.00_epoch_7950.pth"
+    # model_path =  "./models/PMRID_SingleNoiseJin1_64/top_models/lateset_model_psnr_0.00_epoch_7975.pth"
+    model_path =  "./models/PMRID_SingleNoiseJin1_096/top_models/lateset_model_psnr_0.00_epoch_1000.pth"
+    # model_path =  "./models/PMRID_SingleNoiseJin1_128/top_models/lateset_model_psnr_0.00_epoch_7975.pth"
     assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
 
     # ----- get model name -----
@@ -109,23 +95,39 @@ if __name__ == '__main__':
     sOut_folder = os.path.join(sModel_folder, 'denoise_vrf_out')
     os.makedirs(sOut_folder, exist_ok=True)
 
-    # ---------- read vrf ---------- #
-    # ----- glob and copy input vrf ----- #
-    sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
+    # # ---------- Case1: Denoise vrf from Jin1 ---------- #
+    # # ----- glob and copy input vrf ----- #
+    # sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
+    # assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
+    # idxVrf = 33
+    # # idxVrf = 33
+    # # idxVrf = 1
+    # vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
+    # assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
+    # assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
+    # sVrfPath = os.path.join(sFolder, vrf_files[0])
+
+    # sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
+    # sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
+    # shutil.copy(sVrfPath, sVrfCpyPath)
+
+    # sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_denoise.vrf"
+    # sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
+    # DenoiserVrf(sVrfPath, sVrfOutPath)
+
+    # ---------- Case2: Denoise 'add noise to golden 4T output' ---------- #
+    sFolder = r"D:\users\xiaoyaopan\PxyAI\PMRID_OFFICIAL\PMRID"
     assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
     idxVrf = 53
-    # idxVrf = 33
-    # idxVrf = 1
-    vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
+    vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf:02d}_AddNoise.vrf"))
     assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
     assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
     sVrfPath = os.path.join(sFolder, vrf_files[0])
 
-    sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
+    sVrfCpyName = f"{idxVrf:02d}_AddNoise.vrf"
     sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
     shutil.copy(sVrfPath, sVrfCpyPath)
 
-    sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_denoise.vrf"
+    sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_AddNoiseDenoise.vrf"
     sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
-
-    DenoiserVrf(sVrfPath, sVrfOutPath)
+    DenoiserVrf(sVrfPath, sVrfOutPath, net)
