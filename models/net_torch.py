@@ -71,7 +71,6 @@ def Conv2D(
 
     return nn.Sequential(modules)
 
-
 class EncoderBlock(nn.Module):
 
     def __init__(self, in_channels: int, mid_channels: int, out_channels: int, stride: int = 1):
@@ -202,7 +201,6 @@ class NetworkPMRID(NetworkBasic):
         pred = inp + x
         return pred
     
-
 class NetworkTimBrooks(NetworkBasic):
 
     def __init__(self):
@@ -242,6 +240,133 @@ class NetworkTimBrooks(NetworkBasic):
         x = self.out1(x)
 
         pred = inp[:, :4, :, :] + x
+        return pred
+
+class NetworkGolden4T(NetworkBasic):
+
+    def __init__(self):
+        super().__init__()
+
+        self.conv0 = nn.Conv2d(8, 32, kernel_size=3, stride=1, padding=1, bias=True)
+        self.act = nn.LeakyReLU()
+        self.ds = nn.MaxPool2d()
+        self.us = nn.UpsamplingBilinear2d()
+
+        self.Encoder1 = nn.Conv2d(32, 32, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Encoder2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Encoder3 = nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Encoder4 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=True)
+
+        self.Decoder5 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1, bias=True)
+
+        self.Decoder4a = nn.Conv2d(512+256, 256, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Decoder4 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Decoder3a = nn.Conv2d(256+128, 128, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Decoder3 = nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Decoder2a = nn.Conv2d(128+64, 64, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Decoder2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Decoder1a = nn.Conv2d(64+32, 32, kernel_size=3, stride=1, padding=1, bias=True)
+        self.Decoder1 = nn.Conv2d(32, 32, kernel_size=3, stride=1, padding=1, bias=True)
+
+        self.convZ = nn.Conv2d(32, 4, kernel_size=3, stride=1, padding=1, bias=True)
+
+
+    def forward(self, noisyConcat):
+        conv0 = self.conv0(noisyConcat)
+
+        Encoder1A = self.act(self.Encoder1(conv0))
+        Encoder1B = self.act(self.Encoder1(Encoder1A))
+        Encoder1C = self.act(self.Encoder1(Encoder1B))
+        Encoder1D = self.act(self.Encoder1(Encoder1C))
+
+        Encoder2A = self.act(self.Encoder2(self.ds(Encoder1D)))
+        Encoder2B = self.act(self.Encoder2(Encoder2A))
+        Encoder2C = self.act(self.Encoder2(Encoder2B))
+        Encoder2D = self.act(self.Encoder2(Encoder2C))
+
+        Encoder3A = self.act(self.Encoder3(self.ds(Encoder2D)))
+        Encoder3B = self.act(self.Encoder3(Encoder3A))
+        Encoder3C = self.act(self.Encoder3(Encoder3B))
+        Encoder3D = self.act(self.Encoder3(Encoder3C))
+
+        Encoder4A = self.act(self.Encoder4(self.ds(Encoder3D)))
+        Encoder4B = self.act(self.Encoder4(Encoder4A))
+        Encoder4C = self.act(self.Encoder4(Encoder4B))
+        Encoder4D = self.act(self.Encoder4(Encoder4C))
+
+        Decoder5A = self.act(self.Decoder5(self.ds(Encoder4D)))
+        Decoder5B = self.act(self.Decoder5(Decoder5A))
+        Decoder5C = self.act(self.Decoder5(Decoder5B))
+        Decoder5D = self.act(self.Decoder5(Decoder5C))
+        Decoder5Dus = np.concatenate(Encoder4D, self.us(Decoder5D), axis=1)
+
+        Decoder4A = self.act(self.Decoder4a(Decoder5Dus))
+        Decoder4B = self.act(self.Decoder4(Decoder4A))
+        Decoder4C = self.act(self.Decoder4(Decoder4B))
+        Decoder4D = self.act(self.Decoder4(Decoder4C))
+        Decoder4Dus = np.concatenate(Encoder3D, self.us(Decoder4D), axis=1)
+
+        Decoder3A = self.act(self.Decoder3a(Decoder4Dus))
+        Decoder3B = self.act(self.Decoder3(Decoder3A))
+        Decoder3C = self.act(self.Decoder3(Decoder3B))
+        Decoder3D = self.act(self.Decoder3(Decoder3C))
+        Decoder3Dus = np.concatenate(Encoder2D, self.us(Decoder3D), axis=1)
+
+        Decoder2A = self.act(self.Decoder2a(Decoder3Dus))
+        Decoder2B = self.act(self.Decoder2(Decoder2A))
+        Decoder2C = self.act(self.Decoder2(Decoder2B))
+        Decoder2D = self.act(self.Decoder2(Decoder2C))
+        Decoder2Dus = np.concatenate(Encoder1D, self.us(Decoder2D), axis=1)
+
+        Decoder1A = self.act(self.Decoder1a(Decoder2Dus))
+        Decoder1B = self.act(self.Decoder1(Decoder1A))
+        Decoder1C = self.act(self.Decoder1(Decoder1B))
+        Decoder1D = self.act(self.Decoder1(Decoder1C))
+
+        Pred = self.act(self.ConvZ(Decoder1D)) + noisyConcat[:, :4, :, :]
+
+        return Pred
+
+
+class NetworkSingleNoise(NetworkBasic):
+
+    def __init__(self):
+        super().__init__()
+
+        self.conv0 = Conv2D(in_channels=4, out_channels=16, kernel_size=3, padding=1, stride=1, is_seperable=False, has_relu=True)
+        self.enc1 = EncoderStage(in_channels=16, out_channels=64, num_blocks=2)
+        self.enc2 = EncoderStage(in_channels=64, out_channels=128, num_blocks=2)
+        self.enc3 = EncoderStage(in_channels=128, out_channels=256, num_blocks=4)
+        self.enc4 = EncoderStage(in_channels=256, out_channels=512, num_blocks=4)
+
+        self.encdec = Conv2D(in_channels=512, out_channels=64, kernel_size=3, padding=1, stride=1, is_seperable=True, has_relu=True)
+        self.dec1 = DecoderStage(in_channels=64, skip_in_channels=256, out_channels=64)
+        self.dec2 = DecoderStage(in_channels=64, skip_in_channels=128, out_channels=32)
+        self.dec3 = DecoderStage(in_channels=32, skip_in_channels=64, out_channels=32)
+        self.dec4 = DecoderStage(in_channels=32, skip_in_channels=16, out_channels=16)
+
+        self.out0 = DecoderBlock(in_channels=16, out_channels=16, kernel_size=3)
+        self.out1 = Conv2D(in_channels=16, out_channels=4, kernel_size=3, stride=1, padding=1, is_seperable=False, has_relu=False)
+
+    def forward(self, inp):
+
+        conv0 = self.conv0(inp)
+        conv1 = self.enc1(conv0)
+        conv2 = self.enc2(conv1)
+        conv3 = self.enc3(conv2)
+        conv4 = self.enc4(conv3)
+
+        conv5 = self.encdec(conv4)
+
+        up3 = self.dec1((conv5, conv3))
+        up2 = self.dec2((up3, conv2))
+        up1 = self.dec3((up2, conv1))
+        x = self.dec4((up1, conv0))
+
+        x = self.out0(x)
+        x = self.out1(x)
+
+        pred = inp[:, :, :, :] + x
         return pred
     
 
