@@ -35,6 +35,10 @@ def Denoiser(noisy_bayerRGGB, device, SensorGain):
     # ----- Get Sigma: LW method ----- #
     varShot, varRead = GetJin1ShotAndReadVar(SensorGain)
 
+    # ratio = 1023.0/(1023.0-64.0)
+    # varShot = varShot * ratio * ratio
+    # varRead = varRead * ratio
+
     # ----- cal var and concat ----- #
     print("varShot = ", varShot, ", varRead = ", varRead)
     var_rggb = torch.sqrt(torch.clamp(noisy_rggb, 0, 1) * varShot + varRead).to(torch.float32).to(device)
@@ -55,9 +59,6 @@ def DenoiserVrf(sVrfPath, sVrfOutPath):
     ISO = vrfCur.m_ISO
     SensorGain = vrfCur.m_nSensorGain
     print(f"Using ISO: {ISO}, SensorGain: {SensorGain}")
-
-    sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_denoise.vrf"
-    sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
 
     black_level = vrfCur.m_BlackLevel
     white_level = vrfCur.m_WhiteLevel 
@@ -87,8 +88,7 @@ def DenoiserVrf(sVrfPath, sVrfOutPath):
 if __name__ == '__main__':
     # ---------- read model ---------- #
     # ----- assert ckpt paths ----- #
-    model_path =  "./models/TIM_BROOKS_test_AsMuchBlc/top_models/top_model_psnr_50.30_epoch_7180.pth"
-    # model_path =  "./models/TIM_BROOKS_test_AsMuchBlc2/top_models/lateset_model_psnr_0.00_epoch_7950.pth"
+    model_path =  "./models/TIM_BROOKS_test_AsMuchBlc/top_models/lateset_model_psnr_0.00_epoch_7950.pth"
     assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
 
     # ----- get model name -----
@@ -110,22 +110,37 @@ if __name__ == '__main__':
     os.makedirs(sOut_folder, exist_ok=True)
 
     # ---------- read vrf ---------- #
-    # ----- glob and copy input vrf ----- #
-    sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
-    assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-    idxVrf = 53
-    # idxVrf = 33
-    # idxVrf = 1
-    vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
-    assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
-    assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
-    sVrfPath = os.path.join(sFolder, vrf_files[0])
+    # ----- case 1: 1~64 img ----- #
+    # sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
+    # assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
+    # idxVrf = 53
+    # vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
+    # assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
+    # assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
+    # sVrfPath = os.path.join(sFolder, vrf_files[0])
 
-    sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
+    # sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
+    # sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
+    
+    # sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_denoise.vrf"
+
+    # ----- case 2: calibration img ----- #
+    sFolder = r"D:\users\xiaoyaopan\PxyAI\DataSet\Jin1\s5kjin1_noise_calibration_raw"
+    assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
+    # sFileName = r"optical_black/64x_unpack.vrf"
+    sFileName = r"noise_ccm/ccm_64x_1.vrf"
+    sVrfPath = os.path.join(sFolder, sFileName)
+    assert os.path.exists(sVrfPath), f"Data file does not exist: {sVrfPath}"
+
+    sVrfCpyName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_noise.vrf"
+    sVrfOutName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_" + sImgSuffix + "_denoise.vrf"
+
+    # ----- copy input vrf ----- #
     sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
     shutil.copy(sVrfPath, sVrfCpyPath)
 
-    sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_denoise.vrf"
+    # -----denoise and save ----- #
     sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
-
     DenoiserVrf(sVrfPath, sVrfOutPath)
+
+    print("sVrfOutPath = ", sVrfOutPath)
