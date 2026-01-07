@@ -20,8 +20,8 @@ device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 # ----- read 'clean' vrf from Golden 4T inference result ----- #
 sFolder = r"D:\users\xiaoyaopan\PxyAI\PMRID_OFFICIAL\PMRID\models\golden_4T"
 assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-idxVrf = 53
-# idxVrf = 33
+# idxVrf = 53
+idxVrf = 33
 vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}_AI_Denoise.vrf"))
 assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
 assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
@@ -46,10 +46,8 @@ blc01 = float(black_level) / white_level
 dgain = 1.0
 
 # ----- read vrf ----- #
-clean_bayerGRBG = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, 0, dgain, white_level).astype(float)
+clean_bayerGRBG = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level).astype(float)
 clean_bayerGRBG = torch.from_numpy(np.ascontiguousarray(clean_bayerGRBG)).cuda(device)
-clean_bayerGRBG = clean_bayerGRBG - blc01
-clean_bayerGRBG = torch.clamp(clean_bayerGRBG, 0.0, 1.0)
 
 # ---------- Add noise ---------- #
 # ----- Get Sigma: CJ method ----- #
@@ -71,19 +69,16 @@ var_GRBG = clean_bayerGRBG * var_shot + var_read
 noise_bayerGRBG = torch.randn_like(clean_bayerGRBG) * torch.sqrt(var_GRBG)
 print(noise_bayerGRBG.min(), noise_bayerGRBG.max())
 noisy_bayerGRBG = clean_bayerGRBG + noise_bayerGRBG
-# noisy_bayerGRBG = clean_bayerGRBG + 0
 
 # ----- save vrf ----- #
-noisy_bayerGRBG_save = torch.clamp(noisy_bayerGRBG + blc01, 0.0, 1.0)
-noisy_image = save_raw_image(noisy_bayerGRBG_save.detach().cpu().numpy(), "test.raw", white_level, 0)
-save_vrf_image(noisy_image, sVrfPath, f"{idxVrf}_AddNoise.vrf", white_level)
+white_level_out = 2**10 - 1
+black_level_out = 64
+noisy_image = save_raw_image(noisy_bayerGRBG.detach().cpu().numpy(), "test.raw", white_level_out, black_level_out)
+save_vrf_image(noisy_image, sVrfPath, f"{idxVrf}_AddNoise.vrf", white_level_out)
 
 # ---------- Denoise ---------- #
 # ----- read model ----- #
-# model_path =  "./models/TIM_BROOKS_test/top_models/top_model_psnr_50.13_epoch_3910.pth"
-model_path =  "./models/TIM_BROOKS_test_AsMuchBlc/top_models/top_model_psnr_50.30_epoch_7180.pth"
-# model_path =  "./models/TIM_BROOKS_test_AsMuchBlc_AWB/top_models/top_model_psnr_49.74_epoch_530.pth"
-# model_path =  "./models/TIM_BROOKS_test_AsMuchBlc_NegativeGT/top_models/lateset_model_psnr_0.00_epoch_7400.pth"
+model_path =  "./models/TIM_BROOKS_AsMuchBlc_Discrete/top_models/lateset_model_psnr_0.00_epoch_7950.pth"
 assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
 
 # ----- get model name -----
