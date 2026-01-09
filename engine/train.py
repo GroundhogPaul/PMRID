@@ -11,9 +11,7 @@ import cv2
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# from data.RawDataset import create_dataloader, PMRIDRawDataset 
 from data.RawDataset import create_dataloader, PMRIDRawDataset
-#from dataset_SID import create_dataloader
 from benchmark import BenchmarkLoader
 from run_benchmark import Denoiser, KSigma, Official_Ksigma_params
 from utilRaw import RawUtils
@@ -45,8 +43,8 @@ def train():
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--learning_rate', type=float, default=5e-4)
     parser.add_argument('--num_epochs', type=float, default=8000)
-    parser.add_argument('--train_loss_log_step', type=int, default=221*20, help='Log train loss every N steps') # 1000
-    parser.add_argument('--eval_step', type=int, default=221*20, help='Log images to TensorBoard every N steps') # 5000
+    parser.add_argument('--train_loss_log_step', type=int, default=500, help='Log train loss every N steps, step = batch') # 1000
+    parser.add_argument('--eval_step', type=int, default=500, help='Log images to TensorBoard every N steps, step = batch') # 5000
     parser.add_argument('--resume', default=True, help='Whether to resume training')
 
     args = parser.parse_args()
@@ -78,7 +76,7 @@ def train():
         print(f'training a new model from step:0')
 
 
-    dataset = PMRIDRawDataset(args.train_pattern, args.image_size, args.image_size, bPreLoadAll=True, device = device)
+    dataset = PMRIDRawDataset(args.train_pattern, args.image_size, args.image_size, bPreLoadAll=False, device = device)
     train_loader = create_dataloader(dataset, args.batch_size)
     # test_loader = create_dataloader(args.test_pattern, args.image_size, args.image_size, args.batch_size)
     import pathlib as Path
@@ -103,6 +101,7 @@ def train():
     os.makedirs(pathFolderDump, exist_ok=True)
 
     nSaveTestCnt = 20
+    step = start_step
     # ---------- start training ---------- #
     for epoch in range(args.num_epochs): 
         model.train()
@@ -133,7 +132,7 @@ def train():
 
                 nSaveRemain -= 1
             
-            step = start_step + batch_idx + 1 + epoch * len(train_loader)
+            step += 1
             if step % args.train_loss_log_step == 0:
                 current_time = time.time() # s
                 print(f'Epoch: {epoch}, Step: {step}, Batch: {batch_idx + 1}/{len(train_loader)}, Loss: {loss.item():.6f}, Time: {(current_time - start_time):.2f}s')
