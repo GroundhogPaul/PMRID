@@ -25,16 +25,22 @@ Official_Ksigma_params = {
 
 class KSigma:
 
-    def __init__(self, K_coeff: Tuple[float, float], B_coeff: Tuple[float, float, float], anchor: float, V: float = 959.0):
+    def __init__(self, K_coeff: Tuple[float, float], B_coeff: Tuple[float, float, float], anchor: float, V: float = 959.0, k = None, sigma = None):
         self.K = np.poly1d(K_coeff)
         self.Sigma = np.poly1d(B_coeff)
         self.anchor = anchor
         self.V = V
 
+        self.k_default = k
+        self.sigma_default = sigma
+
         self.iso_last = -1.0
     
     def __call__(self, img_01, iso: float, inverse=False):
-        k, sigma = self.K(iso), self.Sigma(iso)
+        if self.k_default is None or self.sigma_default is None:
+            k, sigma = self.K(iso), self.Sigma(iso)
+        else:
+            k, sigma = self.k_default, self.sigma_default
         k_a, sigma_a = self.K(self.anchor), self.Sigma(self.anchor)
 
         cvt_k = k_a / k
@@ -52,9 +58,9 @@ class KSigma:
     def GetKSigma(self, iso: float):
         self.iso_last = iso
         k = self.K(iso)
-        Sigma = self.Sigma(iso)
+        sigma = self.Sigma(iso)
 
-        return k, Sigma
+        return k, sigma
 
 class Denoiser:
 
@@ -68,7 +74,8 @@ class Denoiser:
 
     def pre_process(self, bayer_01: np.ndarray): # 1. bayer to rggb; 2. pad to 32 multiple; 3. HWCh to BChHW
         rggb01_HWCh = RawUtils.bayer2rggb(bayer_01)
-        rggb01_HWCh = rggb01_HWCh.clip(0, 1)
+        print(torch.min(rggb01_HWCh))
+        # rggb01_HWCh = rggb01_HWCh.clip(0, 1)
 
         H, W = rggb01_HWCh.shape[:2]
         ph, pw = (32-(H % 32))//2, (32-(W % 32))//2

@@ -2,16 +2,16 @@ import sys
 import os
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)  # 插入开头，优先搜索
+    sys.path.insert(0, current_dir)
 
 import utilData
 import utilBasic
-import rawpy
 import imageio
 import glob
 import numpy as np
 import torch
 from utilRaw import RawUtils
+from utilArw import ArwReader
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 
@@ -140,20 +140,24 @@ class PMRIDRawDataset(Dataset):
             self.preloaded_bayer_device = []
             print("Dataset: preload all raw files to device: ", device, " begin.")
             for idx in range(len(self.filenames)):
-                self.preloaded_raw.append(rawpy.imread(self.filenames[idx]))
+                self.preloaded_raw.append(ArwReader(self.filenames[idx]))
                 self.preloaded_bayer_device.append(RawArrayToTensor()(self.preloaded_raw[-1].raw_image.astype(np.float32)).to(self.device))
+                self.preloaded_raw[-1].closeRaw()
+                self.preloaded_raw[-1].raw_image = None
+                self.preloaded_raw[-1].raw_image_visible = None
+                self.preloaded_raw[-1].tone_curve = None
                 if idx % 100 == 0:
                     print(f"----- preload {idx+1}/{len(self.filenames)} raw files. -----")
                     print_gpu_memory_stats(self.device)
             print("Dataset: preload all raw files to device: ", device, " end.")
 
-    def random_crop_and_flip(self, input_bayer:np.ndarray, bayer_pattern, H_crop=1024, W_crop=1024, p_flip_ud=0.5, p_flip_lr=0.5) -> np.ndarray:
+    def random_crop_and_flip(self, input_bayer:np.ndarray, bayer_pattern, H_crop=1024, W_crop=1024, p_flip_ud=0.5, p_flip_lr=0.5, p_transpose=0.5) -> np.ndarray:
         """
         Random flip and crop a bayter-patterned image, and normalize the bayer pattern to RGGB.
         """    
         B, H, W = input_bayer.shape
         
-        if np.array_equal(bayer_pattern, [[0, 1], [3, 2]]):    #'RGGB'
+        if np.array_equal(bayer_pattern, [[0, 1], [3, 2]]):    #'RGGB' # TODO: this branch condition is wrong, should judged by RGGB instead of bayer pattern index
             crop_x_offset, crop_y_offset = 0, 0
         elif np.array_equal(bayer_pattern, [[1, 0], [2, 3]]):  #'GRBG'
             crop_x_offset, crop_y_offset = 1, 0
@@ -183,6 +187,10 @@ class PMRIDRawDataset(Dataset):
         if flip_ud:
             crop_bayer = torch.flip(crop_bayer, dims=[1])
         
+        bTranspose = np.random.rand() < p_transpose
+        if bTranspose:
+            crop_bayer = crop_bayer.permute(0,2,1)
+
         return crop_bayer
 
     def add_noise(self, input_bayer_01, noise_type='Gaussian'):
@@ -217,21 +225,20 @@ class PMRIDRawDataset(Dataset):
         # input_raw = rawpy.imread("D:/image_database/SID/SID/Sony/long/00002_00_10s.ARW")
         # read raw
         if self.bPreLoadAll:
-            input_raw = self.preloaded_raw[index]
-            input_bayer = self.preloaded_bayer_device[index]
+            ArwReaderCur = self.preloaded_raw[index]
+            input_bayer = self.preloaded_bayer_device[index] # GPU buffer
         else:
-            input_raw = rawpy.imread(self.filenames[index])
-            input_bayer = input_raw.raw_image.astype(np.float32)
+            ArwReaderCur = ArwReader(self.filenames[index])
+            # ArwReaderCur = ArwReader("D:/image_database/SID/SID/Sony/long/00002_00_10s.ARW") # test code
+            input_bayer = ArwReaderCur.raw_image.astype(np.float32)
             input_bayer = np.ascontiguousarray(input_bayer)
             input_bayer = RawArrayToTensor()(input_bayer)
             input_bayer = input_bayer.to(self.device)
-        bayer_pattern = input_raw.raw_pattern
-        white_level = input_raw.white_level
-        black_level = input_raw.black_level_per_channel[0]
-        B, H, W = input_bayer.shape
 
-        wb_gain = np.array([wb / 1024.0 for wb in input_raw.camera_whitebalance]),
-        ccm = input_raw.rgb_xyz_matrix[:3, :]
+        bayer_pattern = ArwReaderCur.raw_pattern
+        white_level = ArwReaderCur.white_level
+        black_level = ArwReaderCur.black_level_per_channel[0]
+        B, H, W = input_bayer.shape
 
         # ---------- data transform ---------- #         
         input_bayer = self.random_crop_and_flip(input_bayer, bayer_pattern, H_crop=self.height, W_crop=self.width, p_flip_ud=0.5, p_flip_lr=0.5)
@@ -242,10 +249,7 @@ class PMRIDRawDataset(Dataset):
         # input_bayer_01 = (input_bayer - black_level) / (white_level - black_level)
 
         # ----- brightness and contrast augmentation ----- #
-        print(input_bayer_01.min(), input_bayer_01.max(), input_bayer_01.mean())
-        # input_bayer_01 = tvtransforms.ColorJitter(brightness=(0.2, 1.2), contrast=(0.5, 1.5))(input_bayer_01)
-        input_bayer_01 = tvtransforms.ColorJitter(brightness=(1.2, 1.2), contrast=(1.5, 1.5))(input_bayer_01)
-        print(input_bayer_01.min(), input_bayer_01.max(), input_bayer_01.mean())
+        input_bayer_01 = tvtransforms.ColorJitter(brightness=(0.2, 1.2), contrast=(0.5, 1.5))(input_bayer_01)
         input_bayer_01 = torch.clamp(input_bayer_01, 0.0, 1.0)
         input_rggb_01 = RawUtils.bayer_to_rggb(input_bayer_01, "RGGB")  # to [H/2, W/2, 4] RGGB
 
@@ -256,84 +260,62 @@ class PMRIDRawDataset(Dataset):
         input_rggb_01_noisy_k = kSigmaCur(input_rggb_01_noisy, iso=kSigmaCur.iso_last, inverse=False)
 
         # save meta data
+        wb_gain = ArwReaderCur.GetWBgain01("RGGB")
+        ccm3x3 = ArwReaderCur.GetCCM()
         meta_data = {
             'iso': kSigmaCur.iso_last, 
-            'black_level': input_raw.black_level_per_channel[0],
+            'black_level': black_level,
             'wb_gain': wb_gain,
-            'ccm': ccm
+            'ccm': ccm3x3
         }
 
-        return input_rggb_01, input_rggb_01_noisy, input_rggb_01_noisy_k, meta_data
+        # permute to torch net format
+        GT = input_rggb_01
+        GT = GT.permute(2,0,1).to(self.device)
+
+        Noisy = input_rggb_01_noisy
+        Noisy = Noisy.permute(2,0,1).to(self.device)
+
+        Noisy_Ksigma = input_rggb_01_noisy_k
+        Noisy_Ksigma = Noisy_Ksigma.permute(2,0,1).to(self.device)
+
+        return GT, Noisy, Noisy_Ksigma, meta_data
 
     def __len__(self):
         return len(self.filenames)
 
+    @classmethod
+    def ConvertDatasetImgToBGR888(cls, inputs_rggb, meta_data, bKsigma = False, idx = 0):
 
-class TimBrooksRawDataset(PMRIDRawDataset):
-    def __init__(self, dir_pattern, height=1024, width=1024, bPreLoadAll=False, device='cpu'):
-        super().__init__(dir_pattern, height, width, bPreLoadAll=bPreLoadAll, device=device)
+        input_rggb = inputs_rggb[idx]
+        input_rggb = input_rggb
+        input_rggb = input_rggb.permute(1, 2, 0).to('cpu')
 
-    def add_noise(self, input_bayer_01, noise_type='Gaussian'):
-        log_min_shot_noise = torch.log(torch.tensor(0.0001))
-        log_max_shot_noise = torch.log(torch.tensor(0.012))
-        log_shot_noise =  log_min_shot_noise + (log_max_shot_noise - log_min_shot_noise) * torch.rand(1)
-        shot_noise = torch.exp(log_shot_noise).item()
+        if bKsigma:
+            kSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
+            iso = meta_data['iso'][idx]
+            input_rggb = kSigmaCur(input_rggb, iso, inverse=True)
 
-        line = lambda x: 2.18 * x + 1.2
-        log_read_noise = line(log_shot_noise) + torch.normal(mean = 0.0, std = 0.26, size=())
-        read_noise = torch.exp(log_read_noise).item()
-
-        variance = input_bayer_01 * shot_noise + read_noise
-        noise = torch.randn_like(input_bayer_01) * torch.sqrt(variance)
-        
-        noisy_bayer01 = input_bayer_01 + noise
-        return torch.clamp(noisy_bayer01.to(torch.float32), 0, 1), copy.deepcopy(shot_noise), copy.deepcopy(read_noise) 
-    
-    def __getitem__(self, index):
-        # read raw
-        if self.bPreLoadAll:
-            input_raw = self.preloaded_raw[index]
-            input_bayer = self.preloaded_bayer_device[index]
+        if hasattr(input_rggb, 'permute'):    # Pytorch
+            input_rggb = input_rggb.detach().cpu().numpy()
+        elif hasattr(input_rggb, 'shape'):      # Numpy
+            pass
         else:
-            input_raw = rawpy.imread(self.filenames[index])
-            # input_raw = rawpy.imread("D:/image_database/SID/SID/Sony/long/00002_00_10s.ARW") # test code
-            input_bayer = input_raw.raw_image.astype(np.float32)
-            input_bayer = np.ascontiguousarray(input_bayer)
-            input_bayer = RawArrayToTensor()(input_bayer)
-            input_bayer = input_bayer.to(self.device)
-        bayer_pattern = input_raw.raw_pattern
-        white_level = input_raw.white_level
-        black_level = input_raw.black_level_per_channel[0]
-        B, H, W = input_bayer.shape
+            raise NotImplementedError("Input must be a numpy array or pytorch tensor, current type: {}".format(type(input_rggb)))
 
-        wb_gain = np.array([wb / 1024.0 for wb in input_raw.camera_whitebalance]),
-        ccm = input_raw.rgb_xyz_matrix[:3, :]
+        wb_gain = meta_data["wb_gain"][idx]
+        if hasattr(wb_gain, 'permute'):    # Pytorch
+            wb_gain = wb_gain.detach().numpy()
+        CCM = meta_data["ccm"][idx]
+        if hasattr(CCM, 'permute'):    # Pytorch
+            CCM = CCM.detach().numpy()
+    
+        input_rgb = RawUtils.bayer01_2_rgb01(
+            RawUtils.rggb2bayer(input_rggb), wb_gain=wb_gain, CCM=CCM, gamma = 2.2)
+        input_bgr = cv2.cvtColor(input_rgb, cv2.COLOR_RGB2BGR)
+        input_bgr = (input_bgr*255.0).astype(np.uint8)
 
-        # data transform          
-        input_bayer = self.random_crop_and_flip(input_bayer, bayer_pattern, H_crop=self.height, W_crop=self.width, p_flip_ud=0.5, p_flip_lr=0.5)
-        input_bayer_01 = input_bayer / white_level  # no black_level at all, copied from benchmark.py.BenchmarkLoader
-        # input_bayer_01 = (input_bayer - black_level) / (white_level - black_level)
-        # input_bayer_01 = (input_bayer - black_level) / white_level
-
-        # brightness and contrast augmentation
-        input_bayer_01 = tvtransforms.ColorJitter(brightness=(0.2, 1.2), contrast=(0.5, 1.5))(input_bayer_01)
-        input_bayer_01 = torch.clamp(input_bayer_01, 0.0, 1.0)
-        input_rggb_01 = RawUtils.bayer_to_rggb(input_bayer_01, "RGGB")  # to [H/2, W/2, 4] RGGB
-
-        # add random noise
-        input_rggb_01_noisy, shot_noise, read_noise = self.add_noise(input_rggb_01)
-        input_bayer_01_noisy = RawUtils.rggb2bayer(input_rggb_01_noisy)
-        # print("\n train set: shot_noise:", shot_noise.item(), " read_noise:", read_noise.item())
-        input_rggb_variance = torch.sqrt(input_rggb_01_noisy * shot_noise + read_noise)
-
-        # save meta data
-        meta_data = {
-            'black_level': input_raw.black_level_per_channel[0],
-            'wb_gain': wb_gain,
-            'ccm': ccm
-        }
-
-        return input_rggb_01, input_rggb_01_noisy, input_rggb_variance, meta_data
+        return input_bgr
 
 def create_dataloader(dataset, batch_size, num_workers=0):
     """Creates a DataLoader for unprocessing training.
@@ -357,41 +339,28 @@ def create_dataloader(dataset, batch_size, num_workers=0):
         drop_last=True  # To ensure consistent batch sizes
     )
 
-
 if __name__ == "__main__":
     dir_pattern = "D:/image_database/SID/SID/Sony/long/*.ARW"
     # device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
     device = 'cpu'
     bPreLoadAll = False
-    np.random.seed(42)
-    # dataset = PMRIDRawDataset(dir_pattern, device=device, bPreLoadAll=bPreLoadAll)
-    dataset = TimBrooksRawDataset(dir_pattern, device=device, bPreLoadAll=bPreLoadAll)
-    print(f"number of clean raw images for training:{len(dataset)}")
-    input_rggb_01, input_rggb_01_noisy, input_rggb_01_noisy_k, meta_data = dataset[0]
-    # input_rggb_01_denoise = (input_rggb_01_noisy_k - meta_data['cvt_b']) / meta_data['cvt_k']
-    # print(f'cvt_b:{meta_data["cvt_b"]}, cvt_k:{meta_data["cvt_k"]}')
 
-    input_rggb_01 = input_rggb_01.cpu().numpy()
-    input_rggb_01_noisy = input_rggb_01_noisy.cpu().numpy()
-    
-    wb_gain = meta_data["wb_gain"][0]
-    wb_gain = wb_gain[[0,1,2]]
-    CCM = meta_data["ccm"]
-    
-    rgb_clean = RawUtils.bayer01_2_rgb01(
-        RawUtils.rggb2bayer(input_rggb_01), wb_gain=wb_gain, CCM=CCM, gamma = 2.2)
-    rgb_noisy = RawUtils.bayer01_2_rgb01(
-        RawUtils.rggb2bayer(input_rggb_01_noisy), wb_gain=wb_gain, CCM=CCM, gamma=2.2)
-    
+    seed = 40
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
-    # 保存为 JPEG 图像
-    imageio.imwrite('rgb_clean.bmp', (rgb_clean * 255).astype(np.uint8))
-    imageio.imwrite('rgb_noisy.bmp', (rgb_noisy * 255).astype(np.uint8))
+    dataset = PMRIDRawDataset(dir_pattern, device=device, bPreLoadAll=bPreLoadAll)
+    train_loader = create_dataloader(dataset, 1)
 
+    for batch_idx, (inputs_rggb_01_gt, inputs_rggb_01_noisy, inputs_rggb_01_noisy_k, meta_data) in enumerate(train_loader):
+        bgr888_gt = dataset.ConvertDatasetImgToBGR888(inputs_rggb_01_gt, meta_data, idx = 0)
+        cv2.imwrite("rgb_gt.bmp", bgr888_gt)
+
+        bgr888_noisy = dataset.ConvertDatasetImgToBGR888(inputs_rggb_01_noisy, meta_data, idx = 0)
+        cv2.imwrite("rgb_noisy.bmp", bgr888_noisy)
+
+        bgr888_noisy_k = dataset.ConvertDatasetImgToBGR888(inputs_rggb_01_noisy_k, meta_data, bKsigma=True, idx = 0)
+        cv2.imwrite("rgb_noisy_k.bmp", bgr888_noisy_k)
+
+        break
     print("Image saved as output.jpg")
-    
-    # plot_noise_profile_curves()
-    # input_raw.raw_image = np.uint16(input_rggb_noisy * 16383)
-    # rgb_image = input_raw.postprocess()
-    # imageio.imwrite('test.jpg', rgb_image)
-    # print("finish")

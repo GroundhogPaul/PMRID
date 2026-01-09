@@ -1,4 +1,7 @@
+import os 
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True, max_split_size_mb:128'
 import torch
+print(f"PYTORCH_CUDA_ALLOC_CONF: {os.environ.get('PYTORCH_CUDA_ALLOC_CONF', 'Not set')}")
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.utils as vutils
@@ -7,9 +10,9 @@ import argparse
 import cv2
 
 import sys
-import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data.RawDataset import create_dataloader, PMRIDRawDataset 
+# from data.RawDataset import create_dataloader, PMRIDRawDataset 
+from data.RawDataset import create_dataloader, PMRIDRawDataset
 #from dataset_SID import create_dataloader
 from benchmark import BenchmarkLoader
 from run_benchmark import Denoiser, KSigma, Official_Ksigma_params
@@ -27,7 +30,7 @@ from utils.loss import calc_psnr
 def train():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_dir', 
-                        default='models/PMRID_test',
+                        default='models/PMRID_KSigma',
                         help='Location at which to save model logs and checkpoints.'
                         )
     parser.add_argument('--train_pattern', 
@@ -39,16 +42,17 @@ def train():
                         help='Pattern for directory containing source JPG images for testing.'                   
                         )
     parser.add_argument('--image_size', type=int, default=1024)
-    parser.add_argument('--batch_size', type=int, default=1)
-    parser.add_argument('--learning_rate', type=float, default=1e-3)
+    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--learning_rate', type=float, default=5e-4)
     parser.add_argument('--num_epochs', type=float, default=8000)
-    parser.add_argument('--train_loss_log_step', type=int, default=100, help='Log train loss every N steps') # 1000
-    parser.add_argument('--eval_step', type=int, default=500, help='Log images to TensorBoard every N steps') # 5000
+    parser.add_argument('--train_loss_log_step', type=int, default=221*20, help='Log train loss every N steps') # 1000
+    parser.add_argument('--eval_step', type=int, default=221*20, help='Log images to TensorBoard every N steps') # 5000
     parser.add_argument('--resume', default=True, help='Whether to resume training')
 
     args = parser.parse_args()
 
     # visible_device_list代码端配置  2 3 1 0    <->    window任务管理器  GPU0 GPU1 GPU2 GPU3
+    torch.cuda.empty_cache()
     device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
     model = Network().to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
@@ -74,7 +78,7 @@ def train():
         print(f'training a new model from step:0')
 
 
-    dataset = PMRIDRawDataset(args.train_pattern, args.image_size, args.image_size)
+    dataset = PMRIDRawDataset(args.train_pattern, args.image_size, args.image_size, bPreLoadAll=True, device = device)
     train_loader = create_dataloader(dataset, args.batch_size)
     # test_loader = create_dataloader(args.test_pattern, args.image_size, args.image_size, args.batch_size)
     import pathlib as Path
@@ -83,29 +87,51 @@ def train():
     writer = SummaryWriter(os.path.join(args.model_dir, 'log'))
     
     # Track top 10 models by PSNR
-    top_models = defaultdict(list)
+    lst_top_models = defaultdict(list)
+    lst_latest_models = defaultdict(list)
     os.makedirs(os.path.join(args.model_dir, 'top_models'), exist_ok=True)
 
+    # ----- clear and create dump folder ----- #
+    nSaveRemain = 20
+    pathFolderNtrainImage = os.path.join(args.model_dir, 'First_N_train_image')
+    pathFolderDump = os.path.join(args.model_dir, 'Dump')
+    import shutil
+    if not args.resume:
+        shutil.rmtree(pathFolderNtrainImage, ignore_errors = True)
+        shutil.rmtree(pathFolderDump, ignore_errors = True)
+    os.makedirs(pathFolderNtrainImage, exist_ok=True)
+    os.makedirs(pathFolderDump, exist_ok=True)
+
+    nSaveTestCnt = 20
+    # ---------- start training ---------- #
     for epoch in range(args.num_epochs): 
         model.train()
         start_time = time.time()
-        for batch_idx, (inputs_rggb, inputs_rggb_noisy, inputs_rggb_noisy_k, meta_data) in enumerate(train_loader):
-            inputs_rggb_noisy_k = inputs_rggb_noisy_k.permute(0, 3, 1, 2).to(device)
-            inputs_rggb = inputs_rggb.permute(0, 3, 1, 2).to(device)
+        start_time_epoch = time.time()
+        for batch_idx, (inputs_rggb_gt, inputs_rggb_noisy, inputs_rggb_noisy_k, meta_data) in enumerate(train_loader):
             
             optimizer.zero_grad()
             inp_scale = 256.0
             inputs_rggb_noisy_k = inputs_rggb_noisy_k * inp_scale # strange magic number from run_benchmark.py
-            outputs = model(inputs_rggb_noisy_k.to(torch.float32))
-            outputs = outputs / inp_scale # strange magic number from run_benchmark.py
+            outputs_rggb_pred = model(inputs_rggb_noisy_k.to(torch.float32))
+            outputs_rggb_pred = outputs_rggb_pred / inp_scale # strange magic number from run_benchmark.py
 
-            iso = meta_data['iso'].item()
             kSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
-            outputs = kSigmaCur(outputs, iso, inverse=True)
+            for ithImg, iso in enumerate(meta_data['iso']):
+                outputs_rggb_pred[ithImg*4:ithImg*4+4] = kSigmaCur(outputs_rggb_pred[ithImg*4:ithImg*4+4] , iso, inverse=True)
 
-            loss = criterion(outputs, inputs_rggb)
+            loss = criterion(outputs_rggb_pred, inputs_rggb_gt) / args.batch_size
             loss.backward()
             optimizer.step()
+
+            if nSaveRemain > 0: # save the first nSaveRemain train image
+                # ----- prepare test images for log ----- #
+                noisy_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_noisy_k / inp_scale, meta_data, bKsigma=True, idx = 0)
+                cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_Noisy.jpg"), noisy_bgr888)
+                gt_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_gt, meta_data, idx = 0)
+                cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_GT.jpg"), gt_bgr888)
+
+                nSaveRemain -= 1
             
             step = start_step + batch_idx + 1 + epoch * len(train_loader)
             if step % args.train_loss_log_step == 0:
@@ -116,58 +142,58 @@ def train():
 
             # evaluate
             if step % args.eval_step == 0:
-                # Evaluation each epoch
-                denoiser = Denoiser(model, kSigmaCur, device = device, inp_scale = inp_scale)
-                # PSNRtest_psnr s_bayer_denoise = []
+            #     # Evaluation each epoch
+            #     denoiser = Denoiser(model, kSigmaCur, device = device, inp_scale = inp_scale)
+            #     # PSNRtest_psnr s_bayer_denoise = []
                 test_loss = 0.0
-                test_psnr = 0 
-                example_images = []  # Store example images for visualization
+                test_psnr = 0.0
+            #     example_images = []  # Store example images for visualization
 
-                bar = tqdm(bm_loader)
-                with torch.no_grad():
-                    for input_bayer, gt_bayer, meta in bar:
-                        psnrs_bayer_denoise, ssims_bayer_denoise = [], []
-                        bar.set_description(meta.name)
-                        assert meta.bayer_pattern == 'BGGR'
-                        input_bayer_01, gt_bayer_01 = RawUtils.bggr2rggb(input_bayer, gt_bayer)
-                        gt_bayer_01 = torch.from_numpy(np.ascontiguousarray(gt_bayer_01)).cuda(device)
-                        input_bayer_01 = torch.from_numpy(np.ascontiguousarray(input_bayer_01)).cuda(device)
-                        pred_bayer_01 = denoiser.run(input_bayer_01, iso=meta.ISO)
-                        for x0, y0, x1, y1 in meta.ROIs:
-                            # ----- raw ----- #
-                            pred_patch_bayer_01 = pred_bayer_01[y0:y1, x0:x1]
-                            gt_patch_bayer_01 = gt_bayer_01[y0:y1, x0:x1]
+            #     bar = tqdm(bm_loader)
+            #     with torch.no_grad():
+            #         for input_bayer, gt_bayer, meta in bar:
+            #             psnrs_bayer_denoise, ssims_bayer_denoise = [], []
+            #             bar.set_description(meta.name)
+            #             assert meta.bayer_pattern == 'BGGR'
+            #             input_bayer_01, gt_bayer_01 = RawUtils.bggr2rggb(input_bayer, gt_bayer)
+            #             gt_bayer_01 = torch.from_numpy(np.ascontiguousarray(gt_bayer_01)).cuda(device)
+            #             input_bayer_01 = torch.from_numpy(np.ascontiguousarray(input_bayer_01)).cuda(device)
+            #             pred_bayer_01 = denoiser.run(input_bayer_01, iso=meta.ISO)
+            #             for x0, y0, x1, y1 in meta.ROIs:
+            #                 # ----- raw ----- #
+            #                 pred_patch_bayer_01 = pred_bayer_01[y0:y1, x0:x1]
+            #                 gt_patch_bayer_01 = gt_bayer_01[y0:y1, x0:x1]
 
-                            psnr_bayer_denoise = calc_psnr(gt_patch_bayer_01, pred_patch_bayer_01)
-                            psnrs_bayer_denoise.append(float(psnr_bayer_denoise))
+            #                 psnr_bayer_denoise = calc_psnr(gt_patch_bayer_01, pred_patch_bayer_01)
+            #                 psnrs_bayer_denoise.append(float(psnr_bayer_denoise))
 
-                        # test_loss += criterion(gt_rggb_01, output_rggb_01).item()
-                        test_psnr += np.mean(psnrs_bayer_denoise)
+            #             # test_loss += criterion(gt_rggb_01, output_rggb_01).item()
+            #             test_psnr += np.mean(psnrs_bayer_denoise)
 
-                        # Store first batch of images for visualization
-                        if len(example_images) == 0 and meta.ISO == 6400.0:
-                            labels_test = RawUtils.bayer01_2_rgb01(gt_bayer_01.cpu().numpy(), gamma=2.2, wb_gain=meta.wb_gain, CCM=meta.CCM)
-                            inputs_test = RawUtils.bayer01_2_rgb01(input_bayer_01.cpu().numpy(), gamma=2.2, wb_gain=meta.wb_gain, CCM=meta.CCM)
-                            outputs_test = RawUtils.bayer01_2_rgb01(pred_bayer_01.cpu().numpy(), gamma=2.2, wb_gain=meta.wb_gain, CCM=meta.CCM)
-                            labels_test = (labels_test*255.0).astype(np.uint8)
-                            inputs_test = (inputs_test*255.0).astype(np.uint8)
-                            outputs_test = (outputs_test*255.0).astype(np.uint8)
-                            cv2.imwrite("gt_rgb_from_benchmark.bmp", labels_test)
-                            cv2.imwrite("noisy_rgb_from_benchmark.bmp", inputs_test)
-                            cv2.imwrite("denoised_rgb_from_benchmark.bmp", outputs_test)
-                            pred_bayer_01
-                            example_images.append({
-                                'noisy_test': inputs_test,  # batch
-                                'denoised_test': outputs_test,
-                                'clean_test': labels_test
-                            })
-                            # break
+            #             # # Store first batch of images for visualization
+            #             # if len(example_images) == 0 and meta.ISO == 6400.0:
+            #             #     labels_test = RawUtils.bayer01_2_rgb01(gt_bayer_01.cpu().numpy(), gamma=2.2, wb_gain=meta.wb_gain, CCM=meta.CCM)
+            #             #     inputs_test = RawUtils.bayer01_2_rgb01(input_bayer_01.cpu().numpy(), gamma=2.2, wb_gain=meta.wb_gain, CCM=meta.CCM)
+            #             #     outputs_test = RawUtils.bayer01_2_rgb01(pred_bayer_01.cpu().numpy(), gamma=2.2, wb_gain=meta.wb_gain, CCM=meta.CCM)
+            #             #     labels_test = (labels_test*255.0).astype(np.uint8)
+            #             #     inputs_test = (inputs_test*255.0).astype(np.uint8)
+            #             #     outputs_test = (outputs_test*255.0).astype(np.uint8)
+            #             #     cv2.imwrite("gt_rgb_from_benchmark.bmp", labels_test)
+            #             #     cv2.imwrite("noisy_rgb_from_benchmark.bmp", inputs_test)
+            #             #     cv2.imwrite("denoised_rgb_from_benchmark.bmp", outputs_test)
+            #             #     pred_bayer_01
+            #             #     example_images.append({
+            #             #         'noisy_test': inputs_test,  # batch
+            #             #         'denoised_test': outputs_test,
+            #             #         'clean_test': labels_test
+            #             #     })
+            #             #     # break # test code
                 # # log metrics
-                test_loss /= len(bm_loader)
-                test_psnr /= len(bm_loader)
-                print(f'Epoch: {epoch}, Test Loss: {test_loss:.6f}, Test PSNR: {test_psnr:.2f}')
-                writer.add_scalar('test_loss', test_loss, step)
-                writer.add_scalar('test_psnr', test_psnr, step)
+                # test_loss /= len(bm_loader)
+                # test_psnr /= len(bm_loader)
+                # print(f'Epoch: {epoch}, Test Loss: {test_loss:.6f}, Test PSNR: {test_psnr:.2f}')
+                # writer.add_scalar('test_loss', test_loss, step)
+                # writer.add_scalar('test_psnr', test_psnr, step)
 
                 # log imagaes
                 # images = example_images[0]
@@ -182,34 +208,62 @@ def train():
 
                 # Save and update models
                 # torch.save(model.state_dict(), f'{args.model_dir}/model_{epoch}.pth')
-                save_checkpoint(top_models, model, optimizer, epoch, step, test_psnr, args.model_dir)
-                
 
-def save_checkpoint(top_models, model, optimizer, epoch, step, psnr, model_dir):
+                # ----- log train images ----- #
+                train_psnr = calc_psnr(inputs_rggb_gt, outputs_rggb_pred)
+                sDumpTrainPrefix = f"{epoch:04d}_{train_psnr:.2f}"
+
+                sDumpTrainNoisy = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_Noisy.bmp")
+                noisy_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_noisy_k / inp_scale, meta_data, bKsigma=True, idx = 0)
+                cv2.imwrite(sDumpTrainNoisy, noisy_bgr888)
+
+                sDumpTrainPred = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_Pred.bmp")
+                pred_bgr888 = dataset.ConvertDatasetImgToBGR888(outputs_rggb_pred, meta_data, idx = 0)
+                cv2.imwrite(sDumpTrainPred, pred_bgr888)
+
+                sDumpTrainGT = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_GT.bmp")
+                gt_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_gt, meta_data, idx = 0)
+                cv2.imwrite(sDumpTrainGT, gt_bgr888)
+
+                save_checkpoint(lst_top_models, lst_latest_models, model, optimizer, epoch, test_psnr, args.model_dir)
+        end_time_epoch = time.time()
+        print(f'Epoch: {epoch}, Loss: {loss.item():.6f}, Time: {(end_time_epoch - start_time_epoch):.2f}s')
+
+def save_checkpoint(lst_top_models, lst_lateset_models, model, optimizer, epoch, psnr, model_dir):
     os.makedirs(model_dir, exist_ok=True)
-                     
-    if len(top_models) < 10 or psnr > min(top_models.keys()):
+    nKeepTop = 10
+    nKeepLatest = 100
+    
+    # ---------- top models ---------- #
+    if len(lst_top_models) < nKeepTop or psnr > min(lst_top_models.keys()):
         # Remove the worst model if we already have 10
-        if len(top_models) >= 10:
-            worst_psnr = min(top_models.keys())
-            os.remove(top_models[worst_psnr][0])
-            del top_models[worst_psnr]        
+        if len(lst_top_models) >= nKeepTop:
+            worst_psnr = min(lst_top_models.keys())
+            os.remove(lst_top_models[worst_psnr][0])
+            del lst_top_models[worst_psnr]        
 
-        top_model_path = os.path.join(model_dir, 'top_models', f'top_model_psnr_{psnr:.2f}_step_{step}.pth')
+        top_model_path = os.path.join(model_dir, 'top_models', f'top_model_psnr_{psnr:.2f}_epoch_{epoch}.pth')
         torch.save({
             'epoch':epoch,
-            'step':step, 
             'state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'psnr':psnr}, 
             top_model_path)
-        top_models[psnr] = (top_model_path, step)
+        lst_top_models[psnr] = (top_model_path, epoch)
 
-        # # Save metadata about top models
-        # with open(os.path.join(model_dir, 'top_models', 'top_models_info.txt'), 'w') as f:
-        #     for psnr, (path, step) in sorted(top_models.items(), reverse=True):
-        #         f.write(f"PSNR: {psnr:.2f}, Step: {step}, Path: {path}\n")   
-
+    # ---------- lateset models ---------- #
+    lateset_model_path = os.path.join(model_dir, 'top_models', f'lateset_model_psnr_{psnr:.2f}_epoch_{epoch}.pth')
+    torch.save({
+        'epoch':epoch,
+        'state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'psnr':psnr}, 
+        lateset_model_path)
+    lst_lateset_models[epoch] = lateset_model_path
+    if len(lst_lateset_models) > nKeepLatest:
+        oldest_epoch = min(lst_lateset_models.keys())
+        os.remove(lst_lateset_models[oldest_epoch])
+        del lst_lateset_models[oldest_epoch]        
 
 def find_best_model(model_dir):
     if not os.path.exists(model_dir):
