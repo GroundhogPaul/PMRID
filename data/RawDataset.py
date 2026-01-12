@@ -17,7 +17,7 @@ import torchvision.transforms as transforms
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
-from run_benchmark import KSigma, Official_Ksigma_params
+from utils.KSigma import KSigma, Official_Ksigma_params
 import torchvision.transforms as tvtransforms
 import copy
 import cv2
@@ -194,8 +194,15 @@ class PMRIDRawDataset(Dataset):
         return crop_bayer
 
     def add_noise(self, input_bayer_01, noise_type='Gaussian'):
-        iso = torch.randint(100, 6400, (1,))
-        KSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
+        iso = torch.randint(3200, 9600, (1,))
+        # KSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
+        KSigmaCur = KSigma(
+            Official_Ksigma_params['K_coeff'], 
+            Official_Ksigma_params['B_coeff'],
+            Official_Ksigma_params['anchor'], 
+            # k = 0.00251* 1023, # LuoWen param under ISO 6400
+            # sigma = 1.265e-05 * 1023 * 1023
+            )
 
         iso = iso.item()
         k, sigma = KSigmaCur.GetKSigma(iso)
@@ -354,13 +361,13 @@ if __name__ == "__main__":
 
     for batch_idx, (inputs_rggb_01_gt, inputs_rggb_01_noisy, inputs_rggb_01_noisy_k, meta_data) in enumerate(train_loader):
         bgr888_gt = dataset.ConvertDatasetImgToBGR888(inputs_rggb_01_gt, meta_data, idx = 0)
-        cv2.imwrite("rgb_gt.bmp", bgr888_gt)
+        cv2.imwrite(f"rgb_gt_{meta_data['iso'][0]:.2f}.bmp", bgr888_gt)
 
         bgr888_noisy = dataset.ConvertDatasetImgToBGR888(inputs_rggb_01_noisy, meta_data, idx = 0)
-        cv2.imwrite("rgb_noisy.bmp", bgr888_noisy)
+        cv2.imwrite(f"rgb_noisy_{meta_data['iso'][0]:.2f}.bmp", bgr888_noisy)
 
         bgr888_noisy_k = dataset.ConvertDatasetImgToBGR888(inputs_rggb_01_noisy_k, meta_data, bKsigma=True, idx = 0)
-        cv2.imwrite("rgb_noisy_k.bmp", bgr888_noisy_k)
+        cv2.imwrite(f"rgb_noisy_k_{meta_data['iso'][0]:.2f}.bmp", bgr888_noisy_k)
 
         break
     print("Image saved as output.jpg")
