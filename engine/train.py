@@ -13,7 +13,8 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.RawDataset import create_dataloader, PMRIDRawDataset
 from benchmark import BenchmarkLoader
-from run_benchmark import Denoiser, KSigma, Official_Ksigma_params
+from run_benchmark import Denoiser
+from utils.KSigma import KSigma, Official_Ksigma_params
 from utilRaw import RawUtils
 
 from models.net_torch import NetworkPMRID as Network
@@ -43,8 +44,8 @@ def train():
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--learning_rate', type=float, default=5e-4)
     parser.add_argument('--num_epochs', type=float, default=8000)
-    parser.add_argument('--train_loss_log_step', type=int, default=500, help='Log train loss every N steps, step = batch') # 1000
-    parser.add_argument('--eval_step', type=int, default=500, help='Log images to TensorBoard every N steps, step = batch') # 5000
+    parser.add_argument('--train_loss_log_step', type=int, default=750, help='Log train loss every N steps, step = batch') # 1000
+    parser.add_argument('--eval_step', type=int, default=750, help='Log images to TensorBoard every N steps, step = batch') # 5000
     parser.add_argument('--resume', default=True, help='Whether to resume training')
 
     args = parser.parse_args()
@@ -76,7 +77,7 @@ def train():
         print(f'training a new model from step:0')
 
 
-    dataset = PMRIDRawDataset(args.train_pattern, args.image_size, args.image_size, bPreLoadAll=False, device = device)
+    dataset = PMRIDRawDataset(args.train_pattern, args.image_size, args.image_size, bPreLoadAll=True, device = device)
     train_loader = create_dataloader(dataset, args.batch_size)
     # test_loader = create_dataloader(args.test_pattern, args.image_size, args.image_size, args.batch_size)
     import pathlib as Path
@@ -117,7 +118,7 @@ def train():
 
             kSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
             for ithImg, iso in enumerate(meta_data['iso']):
-                outputs_rggb_pred[ithImg*4:ithImg*4+4] = kSigmaCur(outputs_rggb_pred[ithImg*4:ithImg*4+4] , iso, inverse=True)
+                outputs_rggb_pred[ithImg, :, :, :] = kSigmaCur(outputs_rggb_pred[ithImg, :, :, :] , iso, inverse=True)
 
             loss = criterion(outputs_rggb_pred, inputs_rggb_gt) / args.batch_size
             loss.backward()
@@ -126,9 +127,9 @@ def train():
             if nSaveRemain > 0: # save the first nSaveRemain train image
                 # ----- prepare test images for log ----- #
                 noisy_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_noisy_k / inp_scale, meta_data, bKsigma=True, idx = 0)
-                cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_Noisy.jpg"), noisy_bgr888)
+                cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_Noisy_{meta_data['iso'][0]:.2f}.jpg"), noisy_bgr888)
                 gt_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_gt, meta_data, idx = 0)
-                cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_GT.jpg"), gt_bgr888)
+                cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_GT_{meta_data['iso'][0]:.2f}.jpg"), gt_bgr888)
 
                 nSaveRemain -= 1
             
