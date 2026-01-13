@@ -13,54 +13,9 @@ import torch
 import torch.nn.functional as F
 from models.net_torch import NetworkPMRID as Network
 import utilBasic
+from utils.KSigma import KSigma
 from utilRaw import RawUtils
 from benchmark import BenchmarkLoader, RawMeta
-
-
-Official_Ksigma_params = {
-    "K_coeff" : [0.0005995267, 0.00868861],
-    "B_coeff" : [7.11772e-7, 6.514934e-4, 0.11492713],
-    "anchor" : 1600
-    }
-
-class KSigma:
-
-    def __init__(self, K_coeff: Tuple[float, float], B_coeff: Tuple[float, float, float], anchor: float, V: float = 959.0, k = None, sigma = None):
-        self.K = np.poly1d(K_coeff)
-        self.Sigma = np.poly1d(B_coeff)
-        self.anchor = anchor
-        self.V = V
-
-        self.k_default = k
-        self.sigma_default = sigma
-
-        self.iso_last = -1.0
-    
-    def __call__(self, img_01, iso: float, inverse=False):
-        if self.k_default is None or self.sigma_default is None:
-            k, sigma = self.K(iso), self.Sigma(iso)
-        else:
-            k, sigma = self.k_default, self.sigma_default
-        k_a, sigma_a = self.K(self.anchor), self.Sigma(self.anchor)
-
-        cvt_k = k_a / k
-        cvt_b = (sigma / (k ** 2) - sigma_a / (k_a ** 2)) * k_a
-
-        img = img_01 * self.V
-
-        if not inverse:
-            img = img * cvt_k + cvt_b
-        else:
-            img = (img - cvt_b) / cvt_k
-
-        return img / self.V
-
-    def GetKSigma(self, iso: float):
-        self.iso_last = iso
-        k = self.K(iso)
-        sigma = self.Sigma(iso)
-
-        return k, sigma
 
 class Denoiser:
 
