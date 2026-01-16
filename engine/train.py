@@ -29,11 +29,13 @@ from utils.loss import calc_psnr
 def train():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_dir', 
-                        default='models/PMRID_KSigma',
+                        # default='models/PMRID_SID_KSigmaLuoWen_1_96_16_new',
+                        default='models/PMRID_KSigmaLuoWen_1_64_16_Wholy',
                         help='Location at which to save model logs and checkpoints.'
                         )
     parser.add_argument('--train_pattern', 
-                        default='D:/image_database/SID/SID/Sony/long/*.ARW',
+                        # default='D:/image_database/SID/SID/Sony/long/*.ARW',
+                        default='D:/users/xiaoyaopan/PxyAI/DataSet/Raw/Wholy/*.ARW',
                         help='Pattern for directory containing source JPG images for training.'
                         )
     parser.add_argument('--test_pattern', 
@@ -44,15 +46,15 @@ def train():
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--learning_rate', type=float, default=5e-4)
     parser.add_argument('--num_epochs', type=float, default=8000)
-    parser.add_argument('--train_loss_log_step', type=int, default=750, help='Log train loss every N steps, step = batch') # 1000
-    parser.add_argument('--eval_step', type=int, default=750, help='Log images to TensorBoard every N steps, step = batch') # 5000
+    parser.add_argument('--train_loss_log_step', type=int, default=300, help='Log train loss every N steps, step = batch') # 1000
+    parser.add_argument('--eval_step', type=int, default=300, help='Log images to TensorBoard every N steps, step = batch') # 5000
     parser.add_argument('--resume', default=True, help='Whether to resume training')
 
     args = parser.parse_args()
 
     # visible_device_list代码端配置  2 3 1 0    <->    window任务管理器  GPU0 GPU1 GPU2 GPU3
     torch.cuda.empty_cache()
-    device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
     model = Network().to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
     criterion = torch.nn.L1Loss()
@@ -77,8 +79,8 @@ def train():
         print(f'training a new model from step:0')
 
 
-    dataset = PMRIDRawDataset(args.train_pattern, args.image_size, args.image_size, bPreLoadAll=True, device = device)
-    train_loader = create_dataloader(dataset, args.batch_size)
+    dataset = PMRIDRawDataset(args.train_pattern, args.image_size, args.image_size, bPreLoadAll=False, device = device)
+    train_loader = create_dataloader(dataset, args.batch_size, num_workers=0)
     # test_loader = create_dataloader(args.test_pattern, args.image_size, args.image_size, args.batch_size)
     import pathlib as Path
     pathBenchMarkJson = Path.Path("D:/users/xiaoyaopan/PxyAI/DataSet/PMRID/PMRID/benchmark.json")
@@ -91,7 +93,7 @@ def train():
     os.makedirs(os.path.join(args.model_dir, 'top_models'), exist_ok=True)
 
     # ----- clear and create dump folder ----- #
-    nSaveRemain = 20
+    nSaveRemain = 50
     pathFolderNtrainImage = os.path.join(args.model_dir, 'First_N_train_image')
     pathFolderDump = os.path.join(args.model_dir, 'Dump')
     import shutil
@@ -213,15 +215,15 @@ def train():
                 train_psnr = calc_psnr(inputs_rggb_gt, outputs_rggb_pred)
                 sDumpTrainPrefix = f"{epoch:04d}_{train_psnr:.2f}"
 
-                sDumpTrainNoisy = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_Noisy.bmp")
+                sDumpTrainNoisy = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_Noisy.png")
                 noisy_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_noisy_k / inp_scale, meta_data, bKsigma=True, idx = 0)
                 cv2.imwrite(sDumpTrainNoisy, noisy_bgr888)
 
-                sDumpTrainPred = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_Pred.bmp")
+                sDumpTrainPred = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_Pred.png")
                 pred_bgr888 = dataset.ConvertDatasetImgToBGR888(outputs_rggb_pred, meta_data, idx = 0)
                 cv2.imwrite(sDumpTrainPred, pred_bgr888)
 
-                sDumpTrainGT = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_GT.bmp")
+                sDumpTrainGT = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_GT.png")
                 gt_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_gt, meta_data, idx = 0)
                 cv2.imwrite(sDumpTrainGT, gt_bgr888)
 
