@@ -28,7 +28,7 @@ from utils.loss import calc_psnr
 def train():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_dir', 
-                        default='models/OneSingleNoise',
+                        default='models/PMRID_SingleNoiseJin1_064',
                         help='Location at which to save model logs and checkpoints.'
                         )
     parser.add_argument('--train_pattern', 
@@ -51,7 +51,7 @@ def train():
 
     # visible_device_list代码端配置  2 3 1 0    <->    window任务管理器  GPU0 GPU1 GPU2 GPU3
     torch.cuda.empty_cache()
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
     model = Network().to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
     criterion = torch.nn.L1Loss()
