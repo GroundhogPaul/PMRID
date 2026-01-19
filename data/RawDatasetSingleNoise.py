@@ -23,19 +23,19 @@ import cv2
 import math
 from utilBasic import print_gpu_memory_stats
 
-from PlotAgainShotRead import interpolate_gain_var, GetJin1ShotAndReadVar
+from PlotAgainShotRead import interpolate_gain_var, GetJn1ShotAndReadVar
 from RawDataset import RawArrayToTensor, PMRIDRawDataset, create_dataloader 
 
 class SingleNoiseRawDataset(PMRIDRawDataset):
     def __init__(self, dir_pattern, height=1024, width=1024, bPreLoadAll=False, device='cpu'):
         super().__init__(dir_pattern, height, width, bPreLoadAll=bPreLoadAll, device=device)
-        self.black_level_jin1 = 64.0
-        self.white_level_jin1 = 1023.0
-        self.blc_01_jin1 = self.black_level_jin1 / self.white_level_jin1
+        self.black_level_jn1 = 64.0
+        self.white_level_jn1 = 1023.0
+        self.blc_01_jn1 = self.black_level_jn1 / self.white_level_jn1
 
     def get_noise(self, input_bayer_01, noise_type='Gaussian'):
-        SensorGain = 64
-        var_shot, var_read = GetJin1ShotAndReadVar(SensorGain)
+        SensorGain = 64.0
+        var_shot, var_read = GetJn1ShotAndReadVar(SensorGain)
         sig_shot, sig_read = torch.sqrt(torch.tensor(var_shot)), torch.sqrt(torch.tensor(var_read))
 
         if noise_type == 'PoissonGaussian':
@@ -85,15 +85,15 @@ class SingleNoiseRawDataset(PMRIDRawDataset):
 
         # ----- the clean image ----- #  # to [H/2, W/2, 4] RGGB
         clean_rggb_withoutBlc_01 = torch.clamp(clean_rggb_AnyVal, 0.0, 1.0) 
-        clean_rggb_withBlc_01 = torch.clamp(clean_rggb_withoutBlc_01 + self.blc_01_jin1, 0.0, 1.0) 
+        clean_rggb_withBlcJn1_01 = torch.clamp(clean_rggb_withoutBlc_01 + self.blc_01_jn1, 0.0, 1.0) 
 
         # ----- add random noise ----- 
         noise = self.get_noise(clean_rggb_withoutBlc_01) # noise from light
         noisy_rggb_withoutBlc = clean_rggb_withoutBlc_01 + noise # noisy from light and without blc
 
         # ----- clip the value out of [0,1] when added with blc ----- #
-        noisy_rggb_withBlc = noisy_rggb_withoutBlc + self.blc_01_jin1
-        noisy_rggb_withBlc_01 = torch.clamp(noisy_rggb_withBlc.to(torch.float32), 0, 1) # ----- input noisy from camera ----- #
+        noisy_rggb_withBlcJn1 = noisy_rggb_withoutBlc + self.blc_01_jn1
+        noisy_rggb_withBlcJn1_01 = torch.clamp(noisy_rggb_withBlcJn1.to(torch.float32), 0, 1) # ----- input noisy from camera ----- #
 
         # save meta data
         wb_gain = ArwReaderCur.GetWBgain01("RGGB")
@@ -104,14 +104,13 @@ class SingleNoiseRawDataset(PMRIDRawDataset):
             'ccm': ccm3x3
         }
 
-
-        GT = clean_rggb_withBlc_01.permute(2,0,1).to(self.device)
-        Noisy = noisy_rggb_withBlc_01.permute(2,0,1).to(self.device)
+        GT = clean_rggb_withBlcJn1_01.permute(2,0,1).to(self.device)
+        Noisy = noisy_rggb_withBlcJn1_01.permute(2,0,1).to(self.device)
         return GT, Noisy, meta_data
 
     def ConvertDatasetImgToBGR888(self, inputs_rggb, meta_data, idx = 0):
         input_rggb = inputs_rggb[idx]
-        input_rggb = input_rggb - self.blc_01_jin1
+        input_rggb = input_rggb - self.blc_01_jn1
         input_rggb = input_rggb.permute(1, 2, 0).to('cpu')
 
         if hasattr(input_rggb, 'permute'):    # Pytorch
