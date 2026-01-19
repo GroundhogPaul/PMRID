@@ -67,10 +67,10 @@ def DenoiserVrf(sVrfPath, sVrfOutPath):
 
     # ----- read vrf ----- #
     # bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level)
-    noisy_bayerGRBG = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, 0, dgain, white_level)
+    noisy_bayerGRBG = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level, bClipBlc=False)
     noisy_bayerRGGB = np.fliplr(noisy_bayerGRBG)
+    # noisy_bayerRGGB = noisy_bayerGRBG
     noisy_bayerRGGB = torch.from_numpy(np.ascontiguousarray(noisy_bayerRGGB)).cuda(device)
-    noisy_bayerRGGB = noisy_bayerRGGB - blc01
 
     pred_bayerRGGB = Denoiser(noisy_bayerRGGB, device, SensorGain)
 
@@ -88,7 +88,9 @@ def DenoiserVrf(sVrfPath, sVrfOutPath):
 if __name__ == '__main__':
     # ---------- read model ---------- #
     # ----- assert ckpt paths ----- #
-    model_path =  "./models/TIM_BROOKS_test_AsMuchBlc/top_models/lateset_model_psnr_0.00_epoch_7950.pth"
+    # model_path =  "./models/TIM_BROOKS_test_AsMuchJin1Blc_AWB/top_models/lateset_model_psnr_0.00_epoch_7950.pth"
+    model_path =  "./models/TIM_BROOKS_AsMuchBlc_SingleNoise064/top_models/lateset_model_psnr_0.00_epoch_5450.pth"
+    # model_path =  "./models/TIM_BROOKS_AsMuchBlc_Discrete/top_models/top_model_psnr_0.00_epoch_7950.pth"
     assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
 
     # ----- get model name -----
@@ -113,7 +115,7 @@ if __name__ == '__main__':
     # ----- case 1: 1~64 img ----- #
     # sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
     # assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-    # idxVrf = 53
+    # idxVrf = 33
     # vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
     # assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
     # assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
@@ -124,18 +126,30 @@ if __name__ == '__main__':
     
     # sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_denoise.vrf"
 
-    # ----- case 2: calibration img ----- #
-    sFolder = r"D:\users\xiaoyaopan\PxyAI\DataSet\Jin1\s5kjin1_noise_calibration_raw"
+    # ---------- Case2: Denoise 'add noise to golden 4T output' ---------- #
+    # sFolder = r"D:\users\xiaoyaopan\PxyAI\PMRID_OFFICIAL\PMRID"
+    # assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
+    # idxVrf = 53
+    # vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf:02d}_AddNoise.vrf"))
+    # assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
+    # assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
+    # sVrfPath = os.path.join(sFolder, vrf_files[0])
+
+    # sVrfCpyName = f"{idxVrf:02d}_AddNoise.vrf"
+    # sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_AddNoiseDenoise.vrf"
+
+    # ----- case 3: calibration img ----- #
+    # sFolder, sFileName = r"D:\users\xiaoyaopan\PxyAI\DataSet\Jn1\s5kjn1_noise_calibration_raw", r"optical_black/64x_unpack.vrf"
+    # sFolder, sFileName = r"D:\users\xiaoyaopan\PxyAI\DataSet\Jn1\s5kjn1_noise_calibration_raw", r"noise_ccm/ccm_64x_1.vrf"
+    sFolder, sFileName = r"D:\users\xiaoyaopan\PxyAI\DataSet\Jn1\s5kjn1_calibration_raw\blc_unpack", r"gain_64_unpack.vrf"
     assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-    # sFileName = r"optical_black/64x_unpack.vrf"
-    sFileName = r"noise_ccm/ccm_64x_1.vrf"
     sVrfPath = os.path.join(sFolder, sFileName)
     assert os.path.exists(sVrfPath), f"Data file does not exist: {sVrfPath}"
 
     sVrfCpyName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_noise.vrf"
     sVrfOutName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_" + sImgSuffix + "_denoise.vrf"
 
-    # ----- copy input vrf ----- #
+    # # ----- copy input vrf ----- #
     sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
     shutil.copy(sVrfPath, sVrfCpyPath)
 
