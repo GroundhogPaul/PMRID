@@ -72,7 +72,8 @@ def DenoiserVrf(sVrfPath, sVrfOutPath, net):
 if __name__ == '__main__':
     # ---------- read model ---------- #
     # ----- assert ckpt paths ----- #
-    model_path =  "./models/PMRID_SingleNoiseJin1_128/top_models/lateset_model_psnr_0.00_epoch_7975.pth"
+    model_path =  "./models/PMRID_SingleNoiseJin1_064/top_models/lateset_model_psnr_0.00_epoch_3600.pth"
+    # model_path =  "./models/PMRID_SingleNoiseJin1_128/top_models/lateset_model_psnr_0.00_epoch_7975.pth"
     assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
 
     # ----- get model name -----
@@ -94,16 +95,16 @@ if __name__ == '__main__':
     os.makedirs(sOut_folder, exist_ok=True)
 
     # ---------- Case1: Denoise vrf from Jin1 ---------- #
-    # sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
-    # assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-    # idxVrf = 33
-    # vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
-    # assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
-    # assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
-    # sVrfPath = os.path.join(sFolder, vrf_files[0])
+    sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
+    assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
+    idxVrf = 53
+    vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
+    assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
+    assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
+    sVrfPath = os.path.join(sFolder, vrf_files[0])
 
-    # sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
-    # sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_denoise.vrf"
+    sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
+    sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_denoise.vrf"
 
     # ---------- Case2: Denoise 'add noise to golden 4T output' ---------- #
     # sFolder = r"D:\users\xiaoyaopan\PxyAI\PMRID_OFFICIAL\PMRID"
@@ -118,15 +119,15 @@ if __name__ == '__main__':
     # sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_AddNoiseDenoise.vrf"
 
     # ----- case 3: calibration img ----- #
-    sFolder = r"D:\users\xiaoyaopan\PxyAI\DataSet\Jin1\s5kjin1_noise_calibration_raw"
-    assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
+    # sFolder = r"D:\users\xiaoyaopan\PxyAI\DataSet\Jin1\s5kjin1_noise_calibration_raw"
+    # assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
     # sFileName = r"optical_black/64x_unpack.vrf"
-    sFileName = r"noise_ccm/ccm_64x_1.vrf"
-    sVrfPath = os.path.join(sFolder, sFileName)
-    assert os.path.exists(sVrfPath), f"Data file does not exist: {sVrfPath}"
+    # # sFileName = r"noise_ccm/ccm_64x_1.vrf"
+    # sVrfPath = os.path.join(sFolder, sFileName)
+    # assert os.path.exists(sVrfPath), f"Data file does not exist: {sVrfPath}"
 
-    sVrfCpyName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_noise.vrf"
-    sVrfOutName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_" + sImgSuffix + "_denoise.vrf"
+    # sVrfCpyName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_noise.vrf"
+    # sVrfOutName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_" + sImgSuffix + "_denoise.vrf"
 
     # --------- Denoise ----------
     # ----- copy input vrf ----- #
