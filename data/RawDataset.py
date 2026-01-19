@@ -22,6 +22,7 @@ import torchvision.transforms as tvtransforms
 import copy
 import cv2
 import math
+import time
 from utilBasic import print_gpu_memory_stats
 
 class NoiseProfile:
@@ -141,7 +142,7 @@ class PMRIDRawDataset(Dataset):
             print("Dataset: preload all raw files to device: ", device, " begin.")
             for idx in range(len(self.filenames)):
                 self.preloaded_raw.append(ArwReader(self.filenames[idx]))
-                self.preloaded_bayer_device.append(RawArrayToTensor()(self.preloaded_raw[-1].raw_image.astype(np.float32)).to(self.device))
+                self.preloaded_bayer_device.append(RawArrayToTensor()(self.preloaded_raw[-1].raw_image).to(self.device))
                 self.preloaded_raw[-1].closeRaw()
                 self.preloaded_raw[-1].raw_image = None
                 self.preloaded_raw[-1].raw_image_visible = None
@@ -155,7 +156,12 @@ class PMRIDRawDataset(Dataset):
         """
         Random flip and crop a bayter-patterned image, and normalize the bayer pattern to RGGB.
         """    
-        B, H, W = input_bayer.shape
+        if len(input_bayer.shape) == 2:
+            H, W = input_bayer.shape
+        elif len(input_bayer.shape) == 3:
+            B, H, W = input_bayer.shape
+        else:
+            AssertionError
         
         if np.array_equal(bayer_pattern, [[0, 1], [3, 2]]):    #'RGGB' # TODO: this branch condition is wrong, should judged by RGGB instead of bayer pattern index
             crop_x_offset, crop_y_offset = 0, 0
@@ -182,6 +188,13 @@ class PMRIDRawDataset(Dataset):
 
         crop_bayer = input_bayer[..., crop_y_start:crop_y_start+H_crop, crop_x_start:crop_x_start+W_crop]
         
+        # ----- go to torch ---- #
+        if not hasattr(crop_bayer, 'permute'):    # Numpy
+            crop_bayer = np.ascontiguousarray(crop_bayer)
+            crop_bayer = RawArrayToTensor()(crop_bayer)
+        else:
+            crop_bayer = crop_bayer.contiguous()
+
         if flip_lr:
             crop_bayer = torch.flip(crop_bayer, dims=[2])
         if flip_ud:
@@ -193,8 +206,8 @@ class PMRIDRawDataset(Dataset):
 
         return crop_bayer
 
-    def add_noise(self, input_bayer_01, noise_type='Gaussian'):
-        iso = torch.randint(3200, 9600, (1,))
+    def add_noise(self, input_bayer_01, noise_type='Gaussian', blcClip = 0):
+        iso = torch.randint(100, 9600, (1,))
         # KSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
         KSigmaCur = KSigma(
             Official_Ksigma_params['K_coeff'], 
@@ -226,49 +239,69 @@ class PMRIDRawDataset(Dataset):
 
         noisy_bayer_01 = noisy_bayer / kSigmaCalibLevel  # to original scale
 
-        return torch.clamp(noisy_bayer_01.to(torch.float32), 0, 1), copy.deepcopy(KSigmaCur)
+        return torch.clamp(noisy_bayer_01.to(torch.float32), blcClip, 1), copy.deepcopy(KSigmaCur)
     
     def __getitem__(self, index):
-        # input_raw = rawpy.imread("D:/image_database/SID/SID/Sony/long/00002_00_10s.ARW")
-        # read raw
-        if self.bPreLoadAll:
-            ArwReaderCur = self.preloaded_raw[index]
-            input_bayer = self.preloaded_bayer_device[index] # GPU buffer
-        else:
-            ArwReaderCur = ArwReader(self.filenames[index])
-            # ArwReaderCur = ArwReader("D:/image_database/SID/SID/Sony/long/00002_00_10s.ARW") # test code
-            input_bayer = ArwReaderCur.raw_image.astype(np.float32)
-            input_bayer = np.ascontiguousarray(input_bayer)
-            input_bayer = RawArrayToTensor()(input_bayer)
-            input_bayer = input_bayer.to(self.device)
+        self.max_retries = 100
+        retry_count = 0
+        while retry_count < self.max_retries:
+            try:
+                # read raw
+                if self.bPreLoadAll:
+                    ArwReaderCur = self.preloaded_raw[index]
+                    input_bayer = self.preloaded_bayer_device[index] # GPU buffer
+                    bayer_pattern = ArwReaderCur.raw_pattern
+                    input_bayer = self.random_crop_and_flip(input_bayer, bayer_pattern, H_crop=self.height, W_crop=self.width, p_flip_ud=0.5, p_flip_lr=0.5)
+                else:
+                    ArwReaderCur = ArwReader(self.filenames[index])
+                    # ArwReaderCur = ArwReader("D:/image_database/SID/SID/Sony/long/00002_00_10s.ARW") # test code
+                    input_bayer = ArwReaderCur.get_raw_image()
+                    white_level = ArwReaderCur.get_white_level()
+                    black_level = ArwReaderCur.get_black_level_per_channel()[0]
+                    bayer_pattern = ArwReaderCur.get_raw_pattern()
+                    input_bayer = self.random_crop_and_flip(input_bayer, bayer_pattern, H_crop=self.height, W_crop=self.width, p_flip_ud=0.5, p_flip_lr=0.5)
+                    input_bayer = input_bayer.to(self.device)
+                    wb_gain = ArwReaderCur.GetWBgain01("RGGB").astype(np.float32)
+                    ccm3x3 = ArwReaderCur.GetCCM().astype(np.float32)
+                    del ArwReaderCur
+                    break
+            except (MemoryError, np.core._exceptions._ArrayMemoryError, 
+                    SystemError, OSError, Exception) as e:
+                retry_count += 1
+                print(f"尝试 {retry_count}/{self.max_retries} 失败: {e}")
+                wait_time = 1.0
+                time.sleep(wait_time)
+                
+                # 如果是最后尝试，抛出详细错误
+                if retry_count >= self.max_retries:
+                    print(f"经过 {self.max_retries} 次尝试后仍然失败")
+                    print(f"错误文件: {self.filenames[index]}")
+                    raise MemoryError(f"无法加载图像 {self.filenames[index]} 经过 {self.max_retries}次尝试")
+            except Exception as e:
+                raise e
 
-        bayer_pattern = ArwReaderCur.raw_pattern
-        white_level = ArwReaderCur.white_level
-        black_level = ArwReaderCur.black_level_per_channel[0]
-        B, H, W = input_bayer.shape
+        # B, H, W = input_bayer.shape
 
         # ---------- data transform ---------- #         
-        input_bayer = self.random_crop_and_flip(input_bayer, bayer_pattern, H_crop=self.height, W_crop=self.width, p_flip_ud=0.5, p_flip_lr=0.5)
 
         # !!!!! TODO: the black level + jitter + noise is so wrong (with black level) !!!!!
         # ----- black level and normalize ----- #
-        input_bayer_01 = input_bayer / white_level  # no black_level at all, copied from benchmark.py.BenchmarkLoader
-        # input_bayer_01 = (input_bayer - black_level) / (white_level - black_level)
+        # input_bayer_01 = input_bayer / white_level  # no black_level at all, copied from benchmark.py.BenchmarkLoader
+        input_bayer_01 = torch.clamp((input_bayer - black_level) / (white_level), 0.0, 1.0)
 
         # ----- brightness and contrast augmentation ----- #
-        input_bayer_01 = tvtransforms.ColorJitter(brightness=(0.2, 1.2), contrast=(0.5, 1.5))(input_bayer_01)
+        input_bayer_01 = tvtransforms.ColorJitter(brightness=(0.2, 1.2), contrast=(0.8, 1.2))(input_bayer_01)
+        
         input_bayer_01 = torch.clamp(input_bayer_01, 0.0, 1.0)
         input_rggb_01 = RawUtils.bayer_to_rggb(input_bayer_01, "RGGB")  # to [H/2, W/2, 4] RGGB
 
         # add random noise
-        input_rggb_01_noisy, kSigmaCur = self.add_noise(input_rggb_01)
+        input_rggb_01_noisy, kSigmaCur = self.add_noise(input_rggb_01, blcClip=0)
 
         # apply k sigma transform
         input_rggb_01_noisy_k = kSigmaCur(input_rggb_01_noisy, iso=kSigmaCur.iso_last, inverse=False)
 
         # save meta data
-        wb_gain = ArwReaderCur.GetWBgain01("RGGB")
-        ccm3x3 = ArwReaderCur.GetCCM()
         meta_data = {
             'iso': kSigmaCur.iso_last, 
             'black_level': black_level,
@@ -337,27 +370,36 @@ def create_dataloader(dataset, batch_size, num_workers=0):
     Returns:
         A PyTorch DataLoader instance.
     """
+    prefetch_factor = None
+    # prefetch_factor = num_workers if num_workers > 0 else None
+    # prefetch_factor = num_workers * 2 if num_workers > 0 else None
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=True,
+        drop_last=True,  # To ensure consistent batch sizes
+
         num_workers=num_workers,
-        pin_memory=False,
-        drop_last=True  # To ensure consistent batch sizes
+        prefetch_factor = prefetch_factor,
+        persistent_workers=True,
+
+        # pin_memory=True,
+        # pin_memory_device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu'),
+        
+        timeout=100
     )
 
 if __name__ == "__main__":
-    dir_pattern = "D:/image_database/SID/SID/Sony/long/*.ARW"
-    # device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
-    device = 'cpu'
-    bPreLoadAll = False
+    # dir_pattern, bPreLoadAll, device = "D:/image_database/SID/SID/Sony/long_test/*.ARW", True, 'cuda:2'
+    dir_pattern, bPreLoadAll, device = "D:/users/xiaoyaopan/PxyAI/DataSet/Raw/Wholy/*.ARW", False, 'cpu'
+    device = torch.device(device if torch.cuda.is_available() else 'cpu')
 
-    seed = 40
+    seed = 38
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     dataset = PMRIDRawDataset(dir_pattern, device=device, bPreLoadAll=bPreLoadAll)
-    train_loader = create_dataloader(dataset, 1)
+    train_loader = create_dataloader(dataset, 1, num_workers=1)
 
     for batch_idx, (inputs_rggb_01_gt, inputs_rggb_01_noisy, inputs_rggb_01_noisy_k, meta_data) in enumerate(train_loader):
         bgr888_gt = dataset.ConvertDatasetImgToBGR888(inputs_rggb_01_gt, meta_data, idx = 0)
