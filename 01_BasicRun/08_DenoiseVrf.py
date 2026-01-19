@@ -5,7 +5,8 @@ import skimage
 import os
 import cv2
 from utilRaw import RawUtils
-from run_benchmark import KSigma, Official_Ksigma_params, Denoiser
+from run_benchmark import Denoiser
+from utils.KSigma import KSigma, Official_Ksigma_params 
 from utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image
 from models.net_torch import NetworkPMRID as Network
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True, max_split_size_mb:128'
@@ -22,9 +23,11 @@ dgainPxy = 2
 # ----- assert ckpt paths ----- #
 # model_path, inp_scale =  "./models/PMRID_pretrain/top_models/torch_pretrained.ckp", 256
 # model_path, inp_scale =  "./models/PMRID_Jitter/top_models/top_model_psnr_50.57_step_505500.pth", 256
-model_path, inp_scale =  "./models/PMRID_JitterBright1Contrast0/top_models/top_model_psnr_50.57_step_1437000.pth", 256
+model_path, inp_scale =  "./runs/models/PMRID_KSigmaLuoWen_1_64_16_Wholy/top_models/lateset_model_psnr_0.00_epoch_205.pth", 256
+# model_path, inp_scale =  "./models/PMRID_JitterBright1Contrast0/top_models/top_model_psnr_50.57_step_1437000.pth", 256
 # model_path, inp_scale =  "./models/PMRID_JitterBright0Contrast1/top_models/top_model_psnr_50.46_step_322000.pth", 256
-# model_path, inp_scale =  "./models/PMRID_test/top_models/top_model_psnr_49.36_step_166000.pth", 256
+# model_path, inp_scale =  "./models/PMRID_withBlc/top_models/top_model_psnr_49.41_step_212000.pth", 256
+# model_path, inp_scale =  "./models/PMRID_KSigma/top_models/lateset_model_psnr_0.00_epoch_1549.pth", 256
 
 # ----- get model name -----
 path_parts = model_path.split('/')
@@ -47,31 +50,43 @@ os.makedirs(sOut_folder, exist_ok=True)
 # ----- glob and copy input vrf ----- #
 sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
 assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-for idxVrf in range(1, 64):
+# for idxVrf in range(33, 34):
+for idxVrf in [33, 53]:
     vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
     assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
     assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
-    sVrfPath = os.path.join(sFolder, vrf_files[0])
 
+    # ---------- case 1: denoise Jn1 ---------- #
+    sVrfPath = os.path.join(sFolder, vrf_files[0])
     sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
-    sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
-    shutil.copy(sVrfPath, sVrfCpyPath)
+    sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}.vrf"
+
+    # ---------- Case2: Denoise 'add noise to golden 4T output' ---------- #
+    # sFolder = r"D:\users\xiaoyaopan\PxyAI\PMRID_OFFICIAL\PMRID"
+    # assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
+    # vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf:02d}_AddNoise.vrf"))
+    # assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
+    # assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
+    # sVrfPath = os.path.join(sFolder, vrf_files[0])
+
+    # sVrfCpyName = f"{idxVrf:02d}_AddNoise.vrf"
+    # sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_AddNoiseDenoise.vrf"
 
     # ----- read vrf info ----- #
+    sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
+    sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
+    shutil.copy(sVrfPath, sVrfCpyPath)
     vrfCur = vrf(sVrfPath)
     ISO = vrfCur.m_ISO
     print(f"Using ISO: {ISO}")
 
-    sVrfOutName = f"{idxVrf:02d}_denoise_{sImgSuffix}.vrf"
-    sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
-    sVrfOutPathGain = os.path.splitext(sVrfOutPath)[0] + "_Gain" + os.path.splitext(sVrfOutName)[1] 
 
-    black_level = 64
-    white_level = 1023
+    black_level = vrfCur.m_BlackLevel
+    white_level = vrfCur.m_WhiteLevel
     dgain = 1.0
 
     # ----- read vrf ----- #
-    bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level)
+    bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level, bClipBlc=True)
     bayer01_RGGB_noisy = np.fliplr(bayer01_GRBG_noisy)
     bayer01_RGGB_noisy = torch.from_numpy(np.ascontiguousarray(bayer01_RGGB_noisy)).cuda(device)
 
@@ -79,7 +94,9 @@ for idxVrf in range(1, 64):
     kSigma = KSigma(
         K_coeff=Official_Ksigma_params["K_coeff"],
         B_coeff=Official_Ksigma_params["B_coeff"],
-        anchor=Official_Ksigma_params["anchor"]
+        anchor=Official_Ksigma_params["anchor"],
+        # k = 0.00251 * 1023,
+        # sigma = 1.265e-05 * 1023 * 1023, 
     )
 
     DenoiserCur = Denoiser(net, kSigma, device, inp_scale=inp_scale)
@@ -88,37 +105,6 @@ for idxVrf in range(1, 64):
     bayer01_RGGB_denoise = bayer01_RGGB_denoise.cpu().numpy() 
     bayer01_RGGB_denoise = np.clip(bayer01_RGGB_denoise, 0.0, 1.0)
 
-    # ---------- save image ---------- #
-    # ----- save png ----- #
-    bayer01_BGGR_denoise = RawUtils.rggb2bggr(bayer01_RGGB_denoise)
-
-    # TODO: use wb_gain from vrf
-    # bgr01_denoise = RawUtils.bayer01_2_rgb01(bayer01_BGGR_denoise, wb_gain=[1.5156, 1.0, 1.7421], CCM=np.eye(3))
-    bgr01_denoise = RawUtils.bayer01_2_rgb01(bayer01_BGGR_denoise, wb_gain=[vrfCur.m_AWB_Bgain, vrfCur.m_AWB_Ggain, vrfCur.m_AWB_Rgain], CCM=np.eye(3))
-    bgr_denoise = (bgr01_denoise*255.0).astype(np.uint8)
-    bgr_denoise = np.flipud(bgr_denoise)
-    sBmpOutPath = sVrfOutPath.replace(".vrf", ".bmp")
-    cv2.imwrite(sBmpOutPath, bgr_denoise)
-
-    bgr_denoise_gainPxy = bgr_denoise.astype(float) * dgainPxy
-    bgr_denoise_gainPxy = np.clip(bgr_denoise_gainPxy, 0, 255).astype(np.uint8)
-    sBmpOutPathGain = sVrfOutPathGain.replace(".vrf", ".bmp")
-    cv2.imwrite(sBmpOutPathGain, bgr_denoise_gainPxy)
-
-
-    # ----- cal psnr to std ----- #
-    # import skimage
-    # psnr = skimage.metrics.peak_signal_noise_ratio(bgr_denoise, bgr_noisy)
-    # print("psnr_bgr = ", psnr)
-    # print(bayer01_RGGB_denoise.min(), bayer01_RGGB_denoise.max())
-    # print(bayer01_RGGB_noisy.min(), bayer01_RGGB_noisy.max())
-    # psnr = skimage.metrics.peak_signal_noise_ratio(bayer01_RGGB_denoise, bayer01_RGGB_noisy) 
-    # print("psnr_bayer01 = ", psnr)
-
-    # bgr_denoise_std = cv2.imread("denoise_rgb_std.bmp")
-    # errNorm2 = np.linalg.norm(bgr_denoise.astype(np.float32) - bgr_denoise_std.astype(np.float32))
-    # print("errNorm2 = ", errNorm2)
-
     # ----- save vrf ----- #
     out_ratio = 4  #out 12bit
     out_black_level = black_level * out_ratio  # 根据实际情况调整
@@ -126,6 +112,3 @@ for idxVrf in range(1, 64):
     bayer01_GRBG_denoise = np.fliplr(bayer01_RGGB_denoise)
     denoised_image = save_raw_image(bayer01_GRBG_denoise, sVrfOutPath.replace(".vrf", ".raw"), out_white_level, out_black_level)
     save_vrf_image(denoised_image, sVrfPath, sVrfOutPath, out_white_level)
-
-    denoised_image_with_dgainPxy = denoised_image * dgainPxy
-    save_vrf_image(denoised_image_with_dgainPxy, sVrfPath, sVrfOutPathGain, out_white_level)
