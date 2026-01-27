@@ -23,10 +23,11 @@ echo 开始拷贝文件...
 echo.
 
 REM 定义要拷贝的文件数组
-set FILE_COUNT=3
+set FILE_COUNT=4
 set "FILE_LIST[1]=data\RawDataset.py"
 set "FILE_LIST[2]=engine\train.py"
 set "FILE_LIST[3]=utils\KSigma.py"
+set "FILE_LIST[4]=models\net_torch.py"
 
 set ALL_FILES_EXIST=1
 set SUCCESS_COUNT=0

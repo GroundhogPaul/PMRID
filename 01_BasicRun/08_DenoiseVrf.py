@@ -52,11 +52,11 @@ sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
 assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
 # for idxVrf in range(33, 34):
 for idxVrf in [33, 53]:
+
+    # ---------- case 1: denoise Jn1 ---------- #
     vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
     assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
     assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
-
-    # ---------- case 1: denoise Jn1 ---------- #
     sVrfPath = os.path.join(sFolder, vrf_files[0])
     sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
     sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}.vrf"
@@ -80,7 +80,6 @@ for idxVrf in [33, 53]:
     ISO = vrfCur.m_ISO
     print(f"Using ISO: {ISO}")
 
-
     black_level = vrfCur.m_BlackLevel
     white_level = vrfCur.m_WhiteLevel
     dgain = 1.0
@@ -88,7 +87,7 @@ for idxVrf in [33, 53]:
     # ----- read vrf ----- #
     bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level, bClipBlc=True)
     bayer01_RGGB_noisy = np.fliplr(bayer01_GRBG_noisy)
-    bayer01_RGGB_noisy = torch.from_numpy(np.ascontiguousarray(bayer01_RGGB_noisy)).cuda(device)
+    bayer01_RGGB_noisy = torch.from_numpy(np.ascontiguousarray(bayer01_RGGB_noisy)).to(device)
 
     # ---------- Denoise ---------- #
     kSigma = KSigma(
