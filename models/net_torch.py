@@ -166,18 +166,19 @@ class NetworkPMRID(NetworkBasic):
 
     def __init__(self):
         super().__init__()
+        ChRatio = 0.5
 
         self.conv0 = Conv2D(in_channels=4, out_channels=16, kernel_size=3, padding=1, stride=1, is_seperable=False, has_relu=True)
-        self.enc1 = EncoderStage(in_channels=16, out_channels=64, num_blocks=2)
-        self.enc2 = EncoderStage(in_channels=64, out_channels=128, num_blocks=2)
-        self.enc3 = EncoderStage(in_channels=128, out_channels=256, num_blocks=4)
-        self.enc4 = EncoderStage(in_channels=256, out_channels=512, num_blocks=4)
+        self.enc1 = EncoderStage(in_channels=16, out_channels=int(64*ChRatio), num_blocks=2)
+        self.enc2 = EncoderStage(in_channels=int(64*ChRatio), out_channels=int(128*ChRatio), num_blocks=2)
+        self.enc3 = EncoderStage(in_channels=int(128*ChRatio), out_channels=int(256*ChRatio), num_blocks=4)
+        self.enc4 = EncoderStage(in_channels=int(256*ChRatio), out_channels=int(512*ChRatio), num_blocks=4)
 
-        self.encdec = Conv2D(in_channels=512, out_channels=64, kernel_size=3, padding=1, stride=1, is_seperable=True, has_relu=True)
-        self.dec1 = DecoderStage(in_channels=64, skip_in_channels=256, out_channels=64)
-        self.dec2 = DecoderStage(in_channels=64, skip_in_channels=128, out_channels=32)
-        self.dec3 = DecoderStage(in_channels=32, skip_in_channels=64, out_channels=32)
-        self.dec4 = DecoderStage(in_channels=32, skip_in_channels=16, out_channels=16)
+        self.encdec = Conv2D(in_channels=int(512*ChRatio), out_channels=int(64*ChRatio), kernel_size=3, padding=1, stride=1, is_seperable=True, has_relu=True)
+        self.dec1 = DecoderStage(in_channels=int(64*ChRatio), skip_in_channels=int(256*ChRatio), out_channels=int(64*ChRatio))
+        self.dec2 = DecoderStage(in_channels=int(64*ChRatio), skip_in_channels=int(128*ChRatio), out_channels=int(32*ChRatio))
+        self.dec3 = DecoderStage(in_channels=int(32*ChRatio), skip_in_channels=int(64*ChRatio), out_channels=int(32*ChRatio))
+        self.dec4 = DecoderStage(in_channels=int(32*ChRatio), skip_in_channels=int(16), out_channels=16)
 
         self.out0 = DecoderBlock(in_channels=16, out_channels=16, kernel_size=3)
         self.out1 = Conv2D(in_channels=16, out_channels=4, kernel_size=3, stride=1, padding=1, is_seperable=False, has_relu=False)
@@ -202,26 +203,34 @@ class NetworkPMRID(NetworkBasic):
 
         pred = inp + x
         return pred
-    
-class NetworkTimBrooks(NetworkBasic):
+
+class NetworkPMRID2G(NetworkPMRID):
 
     def __init__(self):
         super().__init__()
+        ChRatio = 0.5
 
-        self.conv0 = Conv2D(in_channels=8, out_channels=16, kernel_size=3, padding=1, stride=1, is_seperable=False, has_relu=True)
-        self.enc1 = EncoderStage(in_channels=16, out_channels=64, num_blocks=2)
-        self.enc2 = EncoderStage(in_channels=64, out_channels=128, num_blocks=2)
-        self.enc3 = EncoderStage(in_channels=128, out_channels=256, num_blocks=4)
-        self.enc4 = EncoderStage(in_channels=256, out_channels=512, num_blocks=4)
+        self.conv0 = Conv2D(in_channels=4, out_channels=16, kernel_size=3, padding=1, stride=1, is_seperable=False, has_relu=True)
+        self.enc1 = EncoderStage(in_channels=16, out_channels=int(64*ChRatio), num_blocks=2)
+        self.enc2 = EncoderStage(in_channels=int(64*ChRatio), out_channels=int(64*ChRatio), num_blocks=2)
+        self.enc3 = EncoderStage(in_channels=int(64*ChRatio), out_channels=int(64*ChRatio), num_blocks=4)
+        self.enc4 = EncoderStage(in_channels=int(64*ChRatio), out_channels=int(64*ChRatio), num_blocks=4)
 
-        self.encdec = Conv2D(in_channels=512, out_channels=64, kernel_size=3, padding=1, stride=1, is_seperable=True, has_relu=True)
-        self.dec1 = DecoderStage(in_channels=64, skip_in_channels=256, out_channels=64)
-        self.dec2 = DecoderStage(in_channels=64, skip_in_channels=128, out_channels=32)
-        self.dec3 = DecoderStage(in_channels=32, skip_in_channels=64, out_channels=32)
-        self.dec4 = DecoderStage(in_channels=32, skip_in_channels=16, out_channels=16)
+        self.encdec = Conv2D(in_channels=int(64*ChRatio), out_channels=int(64*ChRatio), kernel_size=3, padding=1, stride=1, is_seperable=True, has_relu=True)
+        self.dec1 = DecoderStage(in_channels=int(64*ChRatio), skip_in_channels=int(64*ChRatio), out_channels=int(64*ChRatio))
+        self.dec2 = DecoderStage(in_channels=int(64*ChRatio), skip_in_channels=int(64*ChRatio), out_channels=int(32*ChRatio))
+        self.dec3 = DecoderStage(in_channels=int(32*ChRatio), skip_in_channels=int(64*ChRatio), out_channels=int(32*ChRatio))
+        self.dec4 = DecoderStage(in_channels=int(32*ChRatio), skip_in_channels=int(16), out_channels=16)
 
         self.out0 = DecoderBlock(in_channels=16, out_channels=16, kernel_size=3)
         self.out1 = Conv2D(in_channels=16, out_channels=4, kernel_size=3, stride=1, padding=1, is_seperable=False, has_relu=False)
+
+class NetworkTimBrooks(NetworkPMRID):
+
+    def __init__(self, ChRatio=1):
+        super().__init__()
+
+        self.conv0 = Conv2D(in_channels=8, out_channels=16, kernel_size=3, padding=1, stride=1, is_seperable=False, has_relu=True)
 
     def forward(self, inp):
 
@@ -332,49 +341,6 @@ class NetworkGolden4T(NetworkBasic):
         Pred = self.act(self.convZ(Decoder1D)) + noisyConcat[:, :4, :, :]
 
         return Pred
-
-
-class NetworkSingleNoise(NetworkBasic):
-
-    def __init__(self):
-        super().__init__()
-
-        self.conv0 = Conv2D(in_channels=4, out_channels=16, kernel_size=3, padding=1, stride=1, is_seperable=False, has_relu=True)
-        self.enc1 = EncoderStage(in_channels=16, out_channels=64, num_blocks=2)
-        self.enc2 = EncoderStage(in_channels=64, out_channels=128, num_blocks=2)
-        self.enc3 = EncoderStage(in_channels=128, out_channels=256, num_blocks=4)
-        self.enc4 = EncoderStage(in_channels=256, out_channels=512, num_blocks=4)
-
-        self.encdec = Conv2D(in_channels=512, out_channels=64, kernel_size=3, padding=1, stride=1, is_seperable=True, has_relu=True)
-        self.dec1 = DecoderStage(in_channels=64, skip_in_channels=256, out_channels=64)
-        self.dec2 = DecoderStage(in_channels=64, skip_in_channels=128, out_channels=32)
-        self.dec3 = DecoderStage(in_channels=32, skip_in_channels=64, out_channels=32)
-        self.dec4 = DecoderStage(in_channels=32, skip_in_channels=16, out_channels=16)
-
-        self.out0 = DecoderBlock(in_channels=16, out_channels=16, kernel_size=3)
-        self.out1 = Conv2D(in_channels=16, out_channels=4, kernel_size=3, stride=1, padding=1, is_seperable=False, has_relu=False)
-
-    def forward(self, inp):
-
-        conv0 = self.conv0(inp)
-        conv1 = self.enc1(conv0)
-        conv2 = self.enc2(conv1)
-        conv3 = self.enc3(conv2)
-        conv4 = self.enc4(conv3)
-
-        conv5 = self.encdec(conv4)
-
-        up3 = self.dec1((conv5, conv3))
-        up2 = self.dec2((up3, conv2))
-        up1 = self.dec3((up2, conv1))
-        x = self.dec4((up1, conv0))
-
-        x = self.out0(x)
-        x = self.out1(x)
-
-        pred = inp[:, :, :, :] + x
-        return pred
-    
 
 if __name__ == "__main__":
     # net, img = NetworkPMRID(), torch.randn(1, 4, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
