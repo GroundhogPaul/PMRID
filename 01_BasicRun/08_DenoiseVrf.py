@@ -3,6 +3,7 @@ import utilBasicRun
 import numpy as np
 import skimage
 import os
+import re
 import cv2
 from utilRaw import RawUtils
 from run_benchmark import Denoiser
@@ -29,15 +30,18 @@ model_path, inp_scale =  "./runs/models/PMRID_KSigmaLuoWen_1_64_16_Wholy/top_mod
 # model_path, inp_scale =  "./models/PMRID_withBlc/top_models/top_model_psnr_49.41_step_212000.pth", 256
 # model_path, inp_scale =  "./models/PMRID_KSigma/top_models/lateset_model_psnr_0.00_epoch_1549.pth", 256
 
+pattern_epoch = r'epoch_(\d+)'
+epoch = int(re.search(pattern_epoch, model_path, re.IGNORECASE).group(1))
+
 # ----- get model name -----
 path_parts = model_path.split('/')
 models_index = path_parts.index('models')
-sImgSuffix = path_parts[models_index + 1]
+sImgSuffix = path_parts[models_index + 1] + f"_e{epoch}"
 print("sImgSuffix = ", sImgSuffix)
 assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
 
 # ----- load ckpt ----- #
-net = Network().to(device)
+net = Network(ChRatio=1).to(device)
 net.load_CKPT(str(model_path), device=torch.device(device))
 net.eval()
 
