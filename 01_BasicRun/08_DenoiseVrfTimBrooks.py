@@ -4,15 +4,15 @@ import numpy as np
 import skimage
 import os
 import cv2
+import re
 from utilRaw import RawUtils
-from run_benchmark import KSigma, Official_Ksigma_params
+from utils.KSigma import KSigma, Official_Ksigma_params 
+from PlotAgainShotRead import interpolate_gain_var, GetJin1ShotAndReadVar
 from utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image 
 from models.net_torch import NetworkTimBrooks as Network
 import torch
 import shutil
 import glob
-from PlotAgainShotRead import interpolate_gain_var, GetJin1ShotAndReadVar
-
 
 # ---------- Denoise ---------- #
 def Denoiser(noisy_bayerRGGB, device, SensorGain):
@@ -67,7 +67,7 @@ def DenoiserVrf(sVrfPath, sVrfOutPath):
 
     # ----- read vrf ----- #
     # bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level)
-    noisy_bayerGRBG = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level, bClipBlc=False)
+    noisy_bayerGRBG = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level, bClipBlc=True)
     noisy_bayerRGGB = np.fliplr(noisy_bayerGRBG)
     # noisy_bayerRGGB = noisy_bayerGRBG
     noisy_bayerRGGB = torch.from_numpy(np.ascontiguousarray(noisy_bayerRGGB)).cuda(device)
@@ -89,9 +89,13 @@ if __name__ == '__main__':
     # ---------- read model ---------- #
     # ----- assert ckpt paths ----- #
     # model_path =  "./models/TIM_BROOKS_test_AsMuchJin1Blc_AWB/top_models/lateset_model_psnr_0.00_epoch_7950.pth"
-    model_path =  "./models/TIM_BROOKS_AsMuchBlc_SingleNoise064/top_models/lateset_model_psnr_0.00_epoch_5450.pth"
+    # model_path =  "./models/TIM_BROOKS_AsMuchBlc_SingleNoise064/top_models/lateset_model_psnr_0.00_epoch_5450.pth"
+    model_path =  "./runs/models/PMRIDhalf_fiveK_1_96_16_LowGain0.20/top_models/latest_modelC_psnr_0.00_epoch_499.pth"
     # model_path =  "./models/TIM_BROOKS_AsMuchBlc_Discrete/top_models/top_model_psnr_0.00_epoch_7950.pth"
     assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
+
+    pattern_epoch = r'epoch_(\d+)'
+    epoch = int(re.search(pattern_epoch, model_path, re.IGNORECASE).group(1))
 
     # ----- get model name -----
     path_parts = model_path.split('/')
@@ -102,7 +106,7 @@ if __name__ == '__main__':
 
     # ----- load ckpt ----- #
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    net = Network().to(device)
+    net = Network(ChRatio=0.5).to(device)
     net.load_CKPT(str(model_path), device=torch.device(device))
     net.eval()
 
@@ -113,18 +117,18 @@ if __name__ == '__main__':
 
     # ---------- read vrf ---------- #
     # ----- case 1: 1~64 img ----- #
-    # sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
-    # assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-    # idxVrf = 33
-    # vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
-    # assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
-    # assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
-    # sVrfPath = os.path.join(sFolder, vrf_files[0])
+    sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
+    assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
+    idxVrf = 53
+    vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
+    assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
+    assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
+    sVrfPath = os.path.join(sFolder, vrf_files[0])
 
-    # sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
-    # sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
+    sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
+    sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
     
-    # sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_denoise.vrf"
+    sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}_netC{epoch}.vrf"
 
     # ---------- Case2: Denoise 'add noise to golden 4T output' ---------- #
     # sFolder = r"D:\users\xiaoyaopan\PxyAI\PMRID_OFFICIAL\PMRID"
@@ -141,13 +145,13 @@ if __name__ == '__main__':
     # ----- case 3: calibration img ----- #
     # sFolder, sFileName = r"D:\users\xiaoyaopan\PxyAI\DataSet\Jn1\s5kjn1_noise_calibration_raw", r"optical_black/64x_unpack.vrf"
     # sFolder, sFileName = r"D:\users\xiaoyaopan\PxyAI\DataSet\Jn1\s5kjn1_noise_calibration_raw", r"noise_ccm/ccm_64x_1.vrf"
-    sFolder, sFileName = r"D:\users\xiaoyaopan\PxyAI\DataSet\Jn1\s5kjn1_calibration_raw\blc_unpack", r"gain_64_unpack.vrf"
-    assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-    sVrfPath = os.path.join(sFolder, sFileName)
-    assert os.path.exists(sVrfPath), f"Data file does not exist: {sVrfPath}"
+    # sFolder, sFileName = r"D:\users\xiaoyaopan\PxyAI\DataSet\Jn1\s5kjn1_calibration_raw\blc_unpack", r"gain_64_unpack.vrf"
+    # assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
+    # sVrfPath = os.path.join(sFolder, sFileName)
+    # assert os.path.exists(sVrfPath), f"Data file does not exist: {sVrfPath}"
 
-    sVrfCpyName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_noise.vrf"
-    sVrfOutName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_" + sImgSuffix + "_denoise.vrf"
+    # sVrfCpyName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_noise.vrf"
+    # sVrfOutName = os.path.splitext(os.path.basename(sVrfPath))[0] + "_" + sImgSuffix + "_denoise.vrf"
 
     # # ----- copy input vrf ----- #
     sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
