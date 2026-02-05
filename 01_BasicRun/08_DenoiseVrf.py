@@ -36,7 +36,7 @@ epoch = int(re.search(pattern_epoch, model_path, re.IGNORECASE).group(1))
 # ----- get model name -----
 path_parts = model_path.split('/')
 models_index = path_parts.index('models')
-sImgSuffix = path_parts[models_index + 1] + f"_e{epoch}"
+sImgSuffix = path_parts[models_index + 1] + f"_netK{epoch}"
 print("sImgSuffix = ", sImgSuffix)
 assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
 
