@@ -164,9 +164,10 @@ class DecoderStage(nn.Module):
 
 class NetworkPMRID(NetworkBasic):
 
-    def __init__(self):
+    def __init__(self, ChRatio):
         super().__init__()
-        ChRatio = 0.5
+
+        assert ChRatio == 0.5 or ChRatio == 1
 
         self.conv0 = Conv2D(in_channels=4, out_channels=16, kernel_size=3, padding=1, stride=1, is_seperable=False, has_relu=True)
         self.enc1 = EncoderStage(in_channels=16, out_channels=int(64*ChRatio), num_blocks=2)
@@ -227,8 +228,8 @@ class NetworkPMRID2G(NetworkPMRID):
 
 class NetworkTimBrooks(NetworkPMRID):
 
-    def __init__(self, ChRatio=1):
-        super().__init__()
+    def __init__(self, ChRatio):
+        super().__init__(ChRatio = ChRatio)
 
         self.conv0 = Conv2D(in_channels=8, out_channels=16, kernel_size=3, padding=1, stride=1, is_seperable=False, has_relu=True)
 
@@ -343,8 +344,8 @@ class NetworkGolden4T(NetworkBasic):
         return Pred
 
 if __name__ == "__main__":
-    # net, img = NetworkPMRID(), torch.randn(1, 4, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
-    net, img = NetworkTimBrooks(), torch.randn(1, 8, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
+    # net, img = NetworkPMRID(ChRatio=0.5), torch.randn(1, 4, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
+    net, img = NetworkTimBrooks(ChRatio=0.5), torch.randn(1, 8, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
     # net, img = NetworkGolden4T(), torch.randn(1, 8, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
     # out = net(img)
 
