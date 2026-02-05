@@ -8,7 +8,7 @@ import cv2
 from utilRaw import RawUtils
 from run_benchmark import Denoiser
 from utils.KSigma import KSigma, Official_Ksigma_params 
-from utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image
+from utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image, CFAPatternEnum, FlipBayerPattern2Pattern
 from models.net_torch import NetworkPMRID as Network
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True, max_split_size_mb:128'
 import torch
@@ -90,7 +90,7 @@ for idxVrf in [33, 53]:
 
     # ----- read vrf ----- #
     bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level, bClipBlc=True)
-    bayer01_RGGB_noisy = np.fliplr(bayer01_GRBG_noisy)
+    bayer01_RGGB_noisy = FlipBayerPattern2Pattern(bayer01_GRBG_noisy, vrfCur.m_CFAPatternNum, CFAPatternEnum.RGGB)
     bayer01_RGGB_noisy = torch.from_numpy(np.ascontiguousarray(bayer01_RGGB_noisy)).to(device)
 
     # ---------- Denoise ---------- #
@@ -112,6 +112,6 @@ for idxVrf in [33, 53]:
     out_ratio = 4  #out 12bit
     out_black_level = black_level * out_ratio  # 根据实际情况调整
     out_white_level = (white_level + 1) * out_ratio - 1
-    bayer01_GRBG_denoise = np.fliplr(bayer01_RGGB_denoise)
+    bayer01_GRBG_denoise = FlipBayerPattern2Pattern(bayer01_RGGB_denoise, CFAPatternEnum.RGGB, vrfCur.m_CFAPatternNum)
     denoised_image = save_raw_image(bayer01_GRBG_denoise, sVrfOutPath.replace(".vrf", ".raw"), out_white_level, out_black_level)
     save_vrf_image(denoised_image, sVrfPath, sVrfOutPath, out_white_level)
