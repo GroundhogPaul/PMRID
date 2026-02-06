@@ -13,6 +13,9 @@ wSearchWin = 17
 rPad = wSearchWin // 2
 wLumaWin = 16 # the Luma Result
 wPatternWin = 4 # SAD on LumaWin
+assert (wLumaWin - wPatternWin) % 2 == 0
+arrLumaRoiOffset = (wLumaWin - wPatternWin) // 2
+pixelOffset = (4 + 2-1) // 2 # 4: 4*4 kernel SAS; 2-1: 2*2 mean to get luma ; forms an efficient 5*5 kernel, and the offset to get center pixel is 2
 
 def NLM_rggb(bayer_rggb_pad):
     assert len(bayer_rggb_pad.shape) == 2
@@ -34,7 +37,7 @@ def NLM_rggb(bayer_rggb_pad):
     arrOfarrLumaDiff = []
     Ndiff_1D = wLumaWin - wPatternWin + 1
     Hpad_Luma, Wpad_Luma = arrLuma.shape # 527, 527
-    arrLuma_pm = arrLuma[6:Hpad_Luma - 6, 6: Wpad_Luma - 6] # 515, 515
+    arrLuma_pm = arrLuma[arrLumaRoiOffset:Hpad_Luma - arrLumaRoiOffset, arrLumaRoiOffset: Wpad_Luma - arrLumaRoiOffset] # 515, 515
     for i in range(Ndiff_1D): # [0,13]
         lstOfarrLumaDiff = []
         if i % 2 == 1:
@@ -44,12 +47,12 @@ def NLM_rggb(bayer_rggb_pad):
             if j % 2 == 1:
                 lstOfarrLumaDiff.append(torch.empty((1,1)))
                 continue
-            arrLumaDiff = torch.abs(arrLuma[i:Hpad_Luma - 6 - 6 + i, j:Wpad_Luma - 6 - 6 + j] - arrLuma_pm)
+            arrLumaDiff = torch.abs(arrLuma[i:Hpad_Luma - 2*arrLumaRoiOffset + i, j:Wpad_Luma - 2*arrLumaRoiOffset + j] - arrLuma_pm)
             H_LumaDiff, W_LumaDiff = arrLumaDiff.shape
-            arrLumaFilt = torch.zeros((H_LumaDiff - 4 + 1, W_LumaDiff - 4 + 1))
-            for ii in range(4):
-                for jj in range(4):
-                    arrLumaFilt += arrLumaDiff[ii:H_LumaDiff - 4 + ii + 1, jj:W_LumaDiff - 4 + jj + 1]
+            arrLumaFilt = torch.zeros((H_LumaDiff - wPatternWin + 1, W_LumaDiff - wPatternWin + 1))
+            for ii in range(wPatternWin):
+                for jj in range(wPatternWin):
+                    arrLumaFilt += arrLumaDiff[ii:H_LumaDiff - wPatternWin + ii + 1, jj:W_LumaDiff - wPatternWin + jj + 1]
             lstOfarrLumaDiff.append(arrLumaFilt)
         arrOfarrLumaDiff.append(lstOfarrLumaDiff)
     
@@ -65,7 +68,7 @@ def NLM_rggb(bayer_rggb_pad):
     arr_valueSum = torch.zeros(shape_out, dtype = float) 
     for i in range(0, Ndiff_1D, 2):
         for j in range(0, Ndiff_1D, 2):
-            arr_value = bayer_rggb_pad[2+i:2+i+Hout,2+j:2+j+Wout]
+            arr_value = bayer_rggb_pad[pixelOffset+i:pixelOffset+i+Hout,pixelOffset+j:pixelOffset+j+Wout]
             arr_weight = arrOfarrLumaWeight[i][j]
             arr_weightSum += arr_weight
             arr_valueSum += arr_weight * arr_value
@@ -80,8 +83,8 @@ if __name__ == "__main__":
 
     # ---------- get vrf ---------- #
     # sVrfPath = "D:/image_database/jn1_mfnr_bestshot/unpacked/33/5_unpacked.vrf"
-    # sVrfPath = "./testIn.vrf"
-    sVrfPath = "./1_AI_Denoise.vrf"
+    sVrfPath = "./testIn.vrf"
+    # sVrfPath = "./1_AI_Denoise.vrf"
     assert os.path.exists(sVrfPath), f"sVrfPath does not exist: {sVrfPath}"
 
     vrfCur = vrf(sVrfPath)
