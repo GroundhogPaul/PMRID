@@ -17,7 +17,8 @@ from run_benchmark import Denoiser
 from utils.KSigma import KSigma, Official_Ksigma_params
 from utilRaw import RawUtils
 
-from models.net_torch import NetworkPMRID as Network
+from models.net_torch import NetworkPMRID as NetworkK
+from models.net_torch import NetworkTimBrooks as NetworkC # C for concatenate
 
 import os
 import numpy as np
@@ -25,17 +26,19 @@ import glob
 import time
 from tqdm import tqdm
 from utils.loss import calc_psnr
+from learn_rate import lr_triangle
 
 def train():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_dir', 
-                        # default='models/PMRID_SID_KSigmaLuoWen_1_96_16_new',
-                        default='models/PMRID_KSigmaLuoWen_1_64_16_Wholy',
+                        default='runs/models/TEST',
                         help='Location at which to save model logs and checkpoints.'
                         )
     parser.add_argument('--train_pattern', 
-                        # default='D:/image_database/SID/SID/Sony/long/*.ARW',
-                        default='D:/users/xiaoyaopan/PxyAI/DataSet/Raw/Wholy/*.ARW',
+                        # default=['D:/image_database/SID/SID/Sony/longVRF/*.vrf'],
+                        # default=['D:/image_database/fivek_dataset/fivek_dataset/raw_photos/vrf/*.vrf', 
+                        #          'D:/image_database/SID/SID/Sony/longVRF/*.vrf'],
+                        default=['D:/image_database/fivek_dataset/fivek_dataset/raw_photos/vrf/*.vrf'],
                         help='Pattern for directory containing source JPG images for training.'
                         )
     parser.add_argument('--test_pattern', 
@@ -43,9 +46,9 @@ def train():
                         help='Pattern for directory containing source JPG images for testing.'                   
                         )
     parser.add_argument('--image_size', type=int, default=1024)
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--learning_rate', type=float, default=5e-4)
-    parser.add_argument('--num_epochs', type=float, default=8000)
+    parser.add_argument('--num_epochs', type=float, default=500)
     parser.add_argument('--train_loss_log_step', type=int, default=300, help='Log train loss every N steps, step = batch') # 1000
     parser.add_argument('--eval_step', type=int, default=300, help='Log images to TensorBoard every N steps, step = batch') # 5000
     parser.add_argument('--resume', default=True, help='Whether to resume training')
@@ -55,27 +58,46 @@ def train():
     # visible_device_list代码端配置  2 3 1 0    <->    window任务管理器  GPU0 GPU1 GPU2 GPU3
     torch.cuda.empty_cache()
     device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
-    model = Network().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
-    criterion = torch.nn.L1Loss()
+
+    model_netK = NetworkK(ChRatio=0.5).to(device)
+    optimizer_netK = optim.Adam(model_netK.parameters(), lr=args.learning_rate)
+    criterion_netK = torch.nn.L1Loss()
+
+    model_netC = NetworkC(ChRatio=0.5).to(device)
+    optimizer_netC = optim.Adam(model_netC.parameters(), lr=args.learning_rate)
+    criterion_netC = torch.nn.L1Loss()
 
     # load checkpoint
     if args.resume:
-        best_model_path, best_psnr = find_best_model(args.model_dir)
+        best_model_path, best_psnr = find_latest_model(args.model_dir, varType="KSigma")
         if best_model_path:
             print(f"find best checkpoint: {best_model_path} (PSNR: {best_psnr:.2f})")
 
             checkpoint = torch.load(best_model_path, weights_only=False)
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            start_step = checkpoint['step']
+            model_netK.load_state_dict(checkpoint['state_dict'])
+            optimizer_netK.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch']
             best_psnr = checkpoint['psnr']
-            print(f"resume from step:{start_step}, best PSNR: {best_psnr:.2f}")
+            print(f"resume from epoch:{start_epoch}, best PSNR: {best_psnr:.2f}")
         else:
-            start_step = 0
+            start_epoch = 0
+            print(f'not finding saved checkpoint, training a new model from step:0')  
+
+        best_model_path, best_psnr = find_latest_model(args.model_dir, varType="Concat")
+        if best_model_path:
+            print(f"find best checkpoint: {best_model_path} (PSNR: {best_psnr:.2f})")
+
+            checkpoint = torch.load(best_model_path, weights_only=False)
+            model_netC.load_state_dict(checkpoint['state_dict'])
+            optimizer_netC.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch']
+            best_psnr = checkpoint['psnr']
+            print(f"resume from epoch:{start_epoch}, best PSNR: {best_psnr:.2f}")
+        else:
+            start_epoch = 0
             print(f'not finding saved checkpoint, training a new model from step:0')  
     else:
-        start_step = 0
+        start_epoch = 0
         print(f'training a new model from step:0')
 
 
@@ -104,43 +126,78 @@ def train():
     os.makedirs(pathFolderDump, exist_ok=True)
 
     nSaveTestCnt = 20
-    step = start_step
+    step = 0
+    stepMax = 558300
     # ---------- start training ---------- #
-    for epoch in range(args.num_epochs): 
-        model.train()
+    for epoch in range(start_epoch+1, args.num_epochs): 
+        model_netK.train()
+        model_netC.train()
         start_time = time.time()
         start_time_epoch = time.time()
-        for batch_idx, (inputs_rggb_gt, inputs_rggb_noisy, inputs_rggb_noisy_k, meta_data) in enumerate(train_loader):
+        start_time_batch = time.time() 
+        for batch_idx, (inputs_rggb_gt, inputs_rggb_noisy, inputs_rggb_noisy_k, inputs_rggb_variance, meta_data) in enumerate(train_loader):
+            # ----- adjust lr ---- #
+            current_lr = lr_triangle(step, stepMax)
+            for param_group in optimizer_netK.param_groups:
+                param_group['lr'] = current_lr
+            for param_group in optimizer_netC.param_groups:
+                param_group['lr'] = current_lr
+
+            # ----- train network KSigma ----- #
             
-            optimizer.zero_grad()
+            optimizer_netK.zero_grad()
             inp_scale = 256.0
             inputs_rggb_noisy_k = inputs_rggb_noisy_k * inp_scale # strange magic number from run_benchmark.py
-            outputs_rggb_pred = model(inputs_rggb_noisy_k.to(torch.float32))
-            outputs_rggb_pred = outputs_rggb_pred / inp_scale # strange magic number from run_benchmark.py
+            outputs_rggb_pred_netK = model_netK(inputs_rggb_noisy_k.to(torch.float32))
+            outputs_rggb_pred_netK = outputs_rggb_pred_netK / inp_scale # strange magic number from run_benchmark.py
 
             kSigmaCur = KSigma(Official_Ksigma_params['K_coeff'], Official_Ksigma_params['B_coeff'], Official_Ksigma_params['anchor'])
             for ithImg, iso in enumerate(meta_data['iso']):
-                outputs_rggb_pred[ithImg, :, :, :] = kSigmaCur(outputs_rggb_pred[ithImg, :, :, :] , iso, inverse=True)
+                outputs_rggb_pred_netK[ithImg, :, :, :] = kSigmaCur(outputs_rggb_pred_netK[ithImg, :, :, :] , iso, inverse=True)
 
-            loss = criterion(outputs_rggb_pred, inputs_rggb_gt) / args.batch_size
-            loss.backward()
-            optimizer.step()
+            train_loss_netK = criterion_netK(outputs_rggb_pred_netK, inputs_rggb_gt) / args.batch_size
+            train_loss_netK.backward()
+            optimizer_netK.step()
 
+            # ----- train network Concat ----- #
+            optimizer_netC.zero_grad()
+            inputs_rggb_concat_netC = torch.cat([inputs_rggb_noisy, inputs_rggb_variance], dim=1)  # concat noisy image and variance map
+            outputs_rggb_pred_netC = model_netC(inputs_rggb_concat_netC.to(torch.float32))
+
+            train_loss_netC = criterion_netC(outputs_rggb_pred_netC, inputs_rggb_gt)
+            train_loss_netC.backward()
+            optimizer_netC.step()
+
+            # end_time_batch = time.time()
+            # print(f'Batch: {batch_idx}, Time: {(end_time_batch - start_time_batch):.2f}s')
+            # start_time_batch = time.time() 
+
+            # ----- save the 1st nSaveRemain image for log ----- #
             if nSaveRemain > 0: # save the first nSaveRemain train image
-                # ----- prepare test images for log ----- #
-                noisy_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_noisy_k / inp_scale, meta_data, bKsigma=True, idx = 0)
-                cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_Noisy_{meta_data['iso'][0]:.2f}.jpg"), noisy_bgr888)
+                # ----- save the GT image ----- #
                 gt_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_gt, meta_data, idx = 0)
                 cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_GT_{meta_data['iso'][0]:.2f}.jpg"), gt_bgr888)
 
+                # ----- save the KSigma noisy image ----- #
+                noisy_bgr888_k = dataset.ConvertDatasetImgToBGR888(inputs_rggb_noisy_k / inp_scale, meta_data, bKsigma=True, idx = 0)
+                cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_Noisy_k_{meta_data['iso'][0]:.2f}.jpg"), noisy_bgr888_k)
+
+                # ----- save the concat noisy image ----- #
+                noisy_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_noisy, meta_data, idx = 0)
+                cv2.imwrite(os.path.join(pathFolderNtrainImage, f"{nSaveRemain}_Noisy_{meta_data['iso'][0]:.2f}.jpg"), noisy_bgr888)
+
                 nSaveRemain -= 1
+            else:
+                pass
             
             step += 1
             if step % args.train_loss_log_step == 0:
                 current_time = time.time() # s
-                print(f'Epoch: {epoch}, Step: {step}, Batch: {batch_idx + 1}/{len(train_loader)}, Loss: {loss.item():.6f}, Time: {(current_time - start_time):.2f}s')
+                print(f'Epoch: {epoch}, Step: {step}, Batch: {batch_idx + 1}/{len(train_loader)}, lr = {current_lr:.2e}, Time: {(current_time - start_time):.2f}s')
+                print(f'   TrainLossK: {train_loss_netK.item():.6f}, TrainLossC: {train_loss_netC.item():.6f}')
                 start_time = current_time
-                writer.add_scalar('train_loss', loss.item(), step)
+                writer.add_scalar('train_loss_netK', train_loss_netK.item(), step)
+                writer.add_scalar('train_loss_netC', train_loss_netC.item(), step)
 
             # evaluate
             if step % args.eval_step == 0:
@@ -211,80 +268,112 @@ def train():
                 # Save and update models
                 # torch.save(model.state_dict(), f'{args.model_dir}/model_{epoch}.pth')
 
-                # ----- log train images ----- #
-                train_psnr = calc_psnr(inputs_rggb_gt, outputs_rggb_pred)
-                sDumpTrainPrefix = f"{epoch:04d}_{train_psnr:.2f}"
-
-                sDumpTrainNoisy = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_Noisy.png")
-                noisy_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_noisy_k / inp_scale, meta_data, bKsigma=True, idx = 0)
-                cv2.imwrite(sDumpTrainNoisy, noisy_bgr888)
-
-                sDumpTrainPred = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_Pred.png")
-                pred_bgr888 = dataset.ConvertDatasetImgToBGR888(outputs_rggb_pred, meta_data, idx = 0)
-                cv2.imwrite(sDumpTrainPred, pred_bgr888)
-
-                sDumpTrainGT = os.path.join(pathFolderDump, sDumpTrainPrefix + "_Train_GT.png")
+                # ---------- log train images ---------- #
+                # ----- GT ----- #
+                sDumpTrainGT = os.path.join(pathFolderDump, f"{epoch:04d}_{step:04d}_Train_GT.png")
                 gt_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_gt, meta_data, idx = 0)
                 cv2.imwrite(sDumpTrainGT, gt_bgr888)
 
-                save_checkpoint(lst_top_models, lst_latest_models, model, optimizer, epoch, test_psnr, args.model_dir)
-        end_time_epoch = time.time()
-        print(f'Epoch: {epoch}, Loss: {loss.item():.6f}, Time: {(end_time_epoch - start_time_epoch):.2f}s')
+                # ----- KSigma ----- #
+                train_psnr_netK = calc_psnr(inputs_rggb_gt, outputs_rggb_pred_netK)
+                sDumpTrainPrefix_netK = f"{epoch:04d}_{step:04d}_{train_psnr_netK:.2f}_netK_"
 
-def save_checkpoint(lst_top_models, lst_lateset_models, model, optimizer, epoch, psnr, model_dir):
+                sDumpTrainNoisy_netK = os.path.join(pathFolderDump, sDumpTrainPrefix_netK + "Train_Noisy.png")
+                noisy_bgr888_netK = dataset.ConvertDatasetImgToBGR888(inputs_rggb_noisy_k / inp_scale, meta_data, bKsigma=True, idx = 0)
+                cv2.imwrite(sDumpTrainNoisy_netK, noisy_bgr888_netK)
+
+                sDumpTrainPred_netK = os.path.join(pathFolderDump, sDumpTrainPrefix_netK + "Train_Pred.png")
+                pred_bgr888_netK = dataset.ConvertDatasetImgToBGR888(outputs_rggb_pred_netK, meta_data, idx = 0)
+                cv2.imwrite(sDumpTrainPred_netK, pred_bgr888_netK)
+
+                save_checkpoint(lst_top_models, lst_latest_models, model_netK, optimizer_netK, epoch, test_psnr, args.model_dir, lr=current_lr, varType="KSigma")
+
+                # ----- Concat ----- #
+                train_psnr_netC = calc_psnr(inputs_rggb_gt, outputs_rggb_pred_netC)
+                sDumpTrainPrefix_netC = f"{epoch:04d}_{step:04d}_{train_psnr_netC:.2f}_netC_"
+                sDumpTrainNoisy_netC = os.path.join(pathFolderDump, sDumpTrainPrefix_netC + "Train_Noisy.bmp")
+                noisy_bgr888 = dataset.ConvertDatasetImgToBGR888(inputs_rggb_noisy, meta_data, 0)
+                cv2.imwrite(sDumpTrainNoisy_netC, noisy_bgr888)
+
+                sDumpTrainPred = os.path.join(pathFolderDump, sDumpTrainPrefix_netC + "Train_Pred.bmp")
+                pred_bgr888 = dataset.ConvertDatasetImgToBGR888(outputs_rggb_pred_netC, meta_data, 0)
+                cv2.imwrite(sDumpTrainPred, pred_bgr888)
+                
+                save_checkpoint(lst_top_models, lst_latest_models, model_netC, optimizer_netC, epoch, test_psnr, args.model_dir, lr=current_lr, varType="Concat")
+
+        end_time_epoch = time.time()
+        print(f'Epoch: {epoch}, TrainLossNetK: {train_loss_netK.item():.6f}, TrainLossNetC: {train_loss_netC.item():.6f}, Time: {(end_time_epoch - start_time_epoch):.2f}s')
+
+def save_checkpoint(lst_top_models, lst_lateset_models, model, optimizer, epoch, psnr, model_dir, lr, varType):
     os.makedirs(model_dir, exist_ok=True)
     nKeepTop = 10
     nKeepLatest = 100
     
     # ---------- top models ---------- #
-    if len(lst_top_models) < nKeepTop or psnr > min(lst_top_models.keys()):
-        # Remove the worst model if we already have 10
-        if len(lst_top_models) >= nKeepTop:
-            worst_psnr = min(lst_top_models.keys())
-            os.remove(lst_top_models[worst_psnr][0])
-            del lst_top_models[worst_psnr]        
+    # if len(lst_top_models) < nKeepTop or psnr > min(lst_top_models.keys()):
+    #     # Remove the worst model if we already have 10
+    #     if len(lst_top_models) >= nKeepTop:
+    #         worst_psnr = min(lst_top_models.keys())
+    #         os.remove(lst_top_models[worst_psnr][0])
+    #         del lst_top_models[worst_psnr]        
 
-        top_model_path = os.path.join(model_dir, 'top_models', f'top_model_psnr_{psnr:.2f}_epoch_{epoch}.pth')
-        torch.save({
-            'epoch':epoch,
-            'state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'psnr':psnr}, 
-            top_model_path)
-        lst_top_models[psnr] = (top_model_path, epoch)
+        # top_model_path = os.path.join(model_dir, 'top_models', f'top_psnr{psnr:.2f}_epoch{epoch}.pth')
+        # torch.save({
+        #     'epoch':epoch,
+        #     'state_dict': model.state_dict(),
+        #     'optimizer_state_dict': optimizer.state_dict(),
+        #     'psnr':psnr}, 
+        #     top_model_path)
+        # lst_top_models[psnr] = (top_model_path, epoch)
 
     # ---------- lateset models ---------- #
-    lateset_model_path = os.path.join(model_dir, 'top_models', f'lateset_model_psnr_{psnr:.2f}_epoch_{epoch}.pth')
+    if varType == "KSigma":
+        latest_model_path = os.path.join(model_dir, 'top_models', f'latest_modelK_psnr{psnr:.2f}_epoch{epoch}_lr{lr:.2e}.pth')
+    if varType == "Concat":
+        latest_model_path = os.path.join(model_dir, 'top_models', f'latest_modelC_psnr{psnr:.2f}_epoch{epoch}_lr{lr:.2e}.pth')
+    else:
+        AssertionError
     torch.save({
         'epoch':epoch,
         'state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'psnr':psnr}, 
-        lateset_model_path)
-    lst_lateset_models[epoch] = lateset_model_path
+        latest_model_path)
+    lst_lateset_models[epoch] = latest_model_path
     if len(lst_lateset_models) > nKeepLatest:
         oldest_epoch = min(lst_lateset_models.keys())
         os.remove(lst_lateset_models[oldest_epoch])
         del lst_lateset_models[oldest_epoch]        
 
-def find_best_model(model_dir):
+def find_latest_model(model_dir, varType):
     if not os.path.exists(model_dir):
         return None, -1
     
-    checkpoint_files = glob.glob(os.path.join(model_dir, 'top_models', 'top_model_psnr_*_step_*.pth'))
+    if varType == "KSigma":
+        checkpoint_files = glob.glob(os.path.join(model_dir, 'top_models', 'latest_modelK_psnr_*_epoch_*.pth'))
+    if varType == "Concat":
+        checkpoint_files = glob.glob(os.path.join(model_dir, 'top_models', 'latest_modelC_psnr_*_epoch_*.pth'))
+    else:
+        AssertionError
     if not checkpoint_files:
         return None, -1
 
-    psnr_values = []
+    epoch_values = []
     for f in checkpoint_files:
         try:
-            psnr = float(os.path.basename(f).split('_')[3])
-            psnr_values.append(psnr)
+            filename = os.path.splitext(os.path.basename(f))[0]
+            epoch = int(filename.split('_')[5])
+            epoch_values.append(epoch)
         except:
             continue
 
-    best_idx = np.argmax(psnr_values)
-    return  checkpoint_files[best_idx], psnr_values[best_idx]
+    best_idx = np.argmax(epoch_values)
+    return  checkpoint_files[best_idx], epoch_values[best_idx]
 
 if __name__ == '__main__':
+
+    # seed = 38
+    # torch.manual_seed(seed)
+    # np.random.seed(seed)
+
     train()

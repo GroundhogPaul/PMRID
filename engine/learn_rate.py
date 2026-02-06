@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-def lr_official(epoch, epochMax):
+def lr_triangle(epoch, epochMax):
     assert epoch >= 0
     assert epoch < epochMax
 
@@ -24,7 +24,7 @@ def lr_official(epoch, epochMax):
     return lr
 
 if __name__ == "__main__":
-    epochMax = 8000
+    epochMax = 558300
     lstEpochs = list(range(0, epochMax, 1))
     lstLrs = [lr_official(epoch, epochMax=epochMax) for epoch in lstEpochs]
     plt.plot(lstEpochs, lstLrs)
