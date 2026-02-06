@@ -8,6 +8,7 @@ import torchvision.utils as vutils
 from collections import defaultdict
 import argparse
 import cv2
+import re
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,8 +18,10 @@ from run_benchmark import Denoiser
 from utils.KSigma import KSigma, Official_Ksigma_params
 from utilRaw import RawUtils
 
-from models.net_torch import NetworkPMRID as NetworkK
-from models.net_torch import NetworkTimBrooks as NetworkC # C for concatenate
+# from models.net_torch import NetworkPMRID as NetworkK
+# from models.net_torch import NetworkTimBrooks as NetworkC # C for concatenate
+
+from models.net_torch_SCH import Network_Level3_ch_off_bilinear
 
 import os
 import numpy as np
@@ -31,7 +34,7 @@ from learn_rate import lr_triangle
 def train():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_dir', 
-                        default='runs/models/TEST',
+                        default='runs/models/Huan2.4G_fiveK',
                         help='Location at which to save model logs and checkpoints.'
                         )
     parser.add_argument('--train_pattern', 
@@ -59,11 +62,11 @@ def train():
     torch.cuda.empty_cache()
     device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
 
-    model_netK = NetworkK(ChRatio=0.5).to(device)
+    model_netK = Network_Level3_ch_off_bilinear(mode='KSigma').to(device)
     optimizer_netK = optim.Adam(model_netK.parameters(), lr=args.learning_rate)
     criterion_netK = torch.nn.L1Loss()
 
-    model_netC = NetworkC(ChRatio=0.5).to(device)
+    model_netC = Network_Level3_ch_off_bilinear(mode='Concat').to(device)
     optimizer_netC = optim.Adam(model_netC.parameters(), lr=args.learning_rate)
     criterion_netC = torch.nn.L1Loss()
 
@@ -77,10 +80,12 @@ def train():
             model_netK.load_state_dict(checkpoint['state_dict'])
             optimizer_netK.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint['epoch']
+            start_step = checkpoint['step']
             best_psnr = checkpoint['psnr']
-            print(f"resume from epoch:{start_epoch}, best PSNR: {best_psnr:.2f}")
+            print(f"resume from epoch:{start_epoch}, step:{start_step}, best PSNR: {best_psnr:.2f}")
         else:
             start_epoch = 0
+            start_step = 0
             print(f'not finding saved checkpoint, training a new model from step:0')  
 
         best_model_path, best_psnr = find_latest_model(args.model_dir, varType="Concat")
@@ -91,13 +96,16 @@ def train():
             model_netC.load_state_dict(checkpoint['state_dict'])
             optimizer_netC.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint['epoch']
+            start_step = checkpoint['step']
             best_psnr = checkpoint['psnr']
-            print(f"resume from epoch:{start_epoch}, best PSNR: {best_psnr:.2f}")
+            print(f"resume from epoch:{start_epoch}, step:{start_step}, best PSNR: {best_psnr:.2f}")
         else:
             start_epoch = 0
+            start_step = 0
             print(f'not finding saved checkpoint, training a new model from step:0')  
     else:
         start_epoch = 0
+        start_step = 0
         print(f'training a new model from step:0')
 
 
@@ -126,10 +134,10 @@ def train():
     os.makedirs(pathFolderDump, exist_ok=True)
 
     nSaveTestCnt = 20
-    step = 0
+    step = start_step
     stepMax = 558300
     # ---------- start training ---------- #
-    for epoch in range(start_epoch+1, args.num_epochs): 
+    for epoch in range(start_epoch, args.num_epochs): 
         model_netK.train()
         model_netC.train()
         start_time = time.time()
@@ -161,8 +169,7 @@ def train():
 
             # ----- train network Concat ----- #
             optimizer_netC.zero_grad()
-            inputs_rggb_concat_netC = torch.cat([inputs_rggb_noisy, inputs_rggb_variance], dim=1)  # concat noisy image and variance map
-            outputs_rggb_pred_netC = model_netC(inputs_rggb_concat_netC.to(torch.float32))
+            outputs_rggb_pred_netC = model_netC(inputs_rggb_noisy.to(torch.float32), inputs_rggb_variance.to(torch.float32))
 
             train_loss_netC = criterion_netC(outputs_rggb_pred_netC, inputs_rggb_gt)
             train_loss_netC.backward()
@@ -286,7 +293,7 @@ def train():
                 pred_bgr888_netK = dataset.ConvertDatasetImgToBGR888(outputs_rggb_pred_netK, meta_data, idx = 0)
                 cv2.imwrite(sDumpTrainPred_netK, pred_bgr888_netK)
 
-                save_checkpoint(lst_top_models, lst_latest_models, model_netK, optimizer_netK, epoch, test_psnr, args.model_dir, lr=current_lr, varType="KSigma")
+                save_checkpoint(lst_top_models, lst_latest_models, model_netK, optimizer_netK, epoch, step, test_psnr, args.model_dir, lr=current_lr, varType="KSigma")
 
                 # ----- Concat ----- #
                 train_psnr_netC = calc_psnr(inputs_rggb_gt, outputs_rggb_pred_netC)
@@ -299,12 +306,12 @@ def train():
                 pred_bgr888 = dataset.ConvertDatasetImgToBGR888(outputs_rggb_pred_netC, meta_data, 0)
                 cv2.imwrite(sDumpTrainPred, pred_bgr888)
                 
-                save_checkpoint(lst_top_models, lst_latest_models, model_netC, optimizer_netC, epoch, test_psnr, args.model_dir, lr=current_lr, varType="Concat")
+                save_checkpoint(lst_top_models, lst_latest_models, model_netC, optimizer_netC, epoch, step, test_psnr, args.model_dir, lr=current_lr, varType="Concat")
 
         end_time_epoch = time.time()
         print(f'Epoch: {epoch}, TrainLossNetK: {train_loss_netK.item():.6f}, TrainLossNetC: {train_loss_netC.item():.6f}, Time: {(end_time_epoch - start_time_epoch):.2f}s')
 
-def save_checkpoint(lst_top_models, lst_lateset_models, model, optimizer, epoch, psnr, model_dir, lr, varType):
+def save_checkpoint(lst_top_models, lst_lateset_models, model, optimizer, epoch, step, psnr, model_dir, lr, varType):
     os.makedirs(model_dir, exist_ok=True)
     nKeepTop = 10
     nKeepLatest = 100
@@ -328,13 +335,14 @@ def save_checkpoint(lst_top_models, lst_lateset_models, model, optimizer, epoch,
 
     # ---------- lateset models ---------- #
     if varType == "KSigma":
-        latest_model_path = os.path.join(model_dir, 'top_models', f'latest_modelK_psnr{psnr:.2f}_epoch{epoch}_lr{lr:.2e}.pth')
+        latest_model_path = os.path.join(model_dir, 'top_models', f'latest_modelK_psnr{psnr:.2f}_e{epoch}s{step}_lr{lr:.2e}.pth')
     if varType == "Concat":
-        latest_model_path = os.path.join(model_dir, 'top_models', f'latest_modelC_psnr{psnr:.2f}_epoch{epoch}_lr{lr:.2e}.pth')
+        latest_model_path = os.path.join(model_dir, 'top_models', f'latest_modelC_psnr{psnr:.2f}_e{epoch}s{step}_lr{lr:.2e}.pth')
     else:
         AssertionError
     torch.save({
         'epoch':epoch,
+        'step': step,
         'state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'psnr':psnr}, 
@@ -350,22 +358,21 @@ def find_latest_model(model_dir, varType):
         return None, -1
     
     if varType == "KSigma":
-        checkpoint_files = glob.glob(os.path.join(model_dir, 'top_models', 'latest_modelK_psnr_*_epoch_*.pth'))
+        checkpoint_files = glob.glob(os.path.join(model_dir, 'top_models', 'latest_modelK_psnr*_e*s*_lr*.pth'))
     if varType == "Concat":
-        checkpoint_files = glob.glob(os.path.join(model_dir, 'top_models', 'latest_modelC_psnr_*_epoch_*.pth'))
+        checkpoint_files = glob.glob(os.path.join(model_dir, 'top_models', 'latest_modelC_psnr*_e*s*_lr*.pth'))
     else:
         AssertionError
     if not checkpoint_files:
         return None, -1
 
     epoch_values = []
+    step_values = []
     for f in checkpoint_files:
-        try:
-            filename = os.path.splitext(os.path.basename(f))[0]
-            epoch = int(filename.split('_')[5])
-            epoch_values.append(epoch)
-        except:
-            continue
+        filename = os.path.splitext(os.path.basename(f))[0]
+        match = re.search(r'e(?P<epoch>\d+)s(?P<step>\d+)', filename)
+        epoch_values.append(int(match.group('epoch')))
+        step_values.append(int(match.group('step')))
 
     best_idx = np.argmax(epoch_values)
     return  checkpoint_files[best_idx], epoch_values[best_idx]
