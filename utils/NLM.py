@@ -10,11 +10,13 @@ import time
 from utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image, CFAPatternEnum, FlipBayerPattern2Pattern
 
 wSearchWin = 17
+wCenterLuma = 5
 rPad = wSearchWin // 2
-wLumaWin = 16 # the Luma Result
+wLumaWin = wSearchWin - 1 # the Luma Result
 wPatternWin = 4 # SAD on LumaWin
 assert (wLumaWin - wPatternWin) % 2 == 0
 arrLumaRoiOffset = (wLumaWin - wPatternWin) // 2
+arrCenterLumaOffset = (wSearchWin - 2+1 - wCenterLuma) // 2
 pixelOffset = (4 + 2-1) // 2 # 4: 4*4 kernel SAS; 2-1: 2*2 mean to get luma ; forms an efficient 5*5 kernel, and the offset to get center pixel is 2
 
 def NLM_rggb(bayer_rggb_pad):
@@ -22,12 +24,15 @@ def NLM_rggb(bayer_rggb_pad):
     assert bayer_rggb_pad.shape[0] % 2 == 0
     assert bayer_rggb_pad.shape[1] % 2 == 0
 
+    device = bayer_rggb_pad.device
+    dtype = bayer_rggb_pad.dtype
+
     Hpad, Wpad = bayer_rggb_pad.shape   # 528, 528 
     Hout, Wout = Hpad - rPad - rPad, Wpad - rPad - rPad # 512, 512
     assert Hout % 2 == 0
     assert Wout % 2 == 0
     shape_out = (Hout, Wout)
-    bayer_out = torch.zeros(shape_out, dtype = bayer_rggb_pad.dtype, device = bayer_rggb_pad.device)
+    bayer_out = torch.zeros(shape_out, dtype = dtype, device = device)
 
     # ----- Luma ----- #
     arrLuma = bayer_rggb_pad[0:-1, 0:-1] + bayer_rggb_pad[0:-1, 1:] + bayer_rggb_pad[1:, 0:-1] + bayer_rggb_pad[1:, 1:]
@@ -49,28 +54,33 @@ def NLM_rggb(bayer_rggb_pad):
                 continue
             arrLumaDiff = torch.abs(arrLuma[i:Hpad_Luma - 2*arrLumaRoiOffset + i, j:Wpad_Luma - 2*arrLumaRoiOffset + j] - arrLuma_pm)
             H_LumaDiff, W_LumaDiff = arrLumaDiff.shape
-            arrLumaFilt = torch.zeros((H_LumaDiff - wPatternWin + 1, W_LumaDiff - wPatternWin + 1))
+            arrLumaFilt = torch.zeros((H_LumaDiff - wPatternWin + 1, W_LumaDiff - wPatternWin + 1), device = device, dtype = dtype)
             for ii in range(wPatternWin):
                 for jj in range(wPatternWin):
                     arrLumaFilt += arrLumaDiff[ii:H_LumaDiff - wPatternWin + ii + 1, jj:W_LumaDiff - wPatternWin + jj + 1]
             lstOfarrLumaDiff.append(arrLumaFilt)
         arrOfarrLumaDiff.append(lstOfarrLumaDiff)
-    
-    # ----- Diff Weight ----- # # TODO currently most naive way
-    arrOfarrLumaWeight = deepcopy(arrOfarrLumaDiff)
-    for i in range(Ndiff_1D):
-        for j in range(Ndiff_1D):
-            if i % 2 == 0 and j % 2 == 0:
-                arrOfarrLumaWeight[i][j] = 1 / (arrOfarrLumaDiff[i][j] + 10)
+
+    # ----- Get Center Luma ----- #
+    arrCenterLuma = torch.zeros((Hout, Wout), dtype=torch.float32)
+    for i in range(wCenterLuma):
+        for j in range(wCenterLuma):
+            arrCenterLuma += arrLuma[arrCenterLumaOffset+i:arrCenterLumaOffset+i+Hout, arrCenterLumaOffset+j:arrCenterLumaOffset+j+Wout]
+    arrCenterLuma /= (wCenterLuma * wCenterLuma)
     
     # ----- add up diff arr ----- #
     arr_weightSum = torch.zeros(shape_out, dtype = float)
     arr_valueSum = torch.zeros(shape_out, dtype = float) 
     for i in range(0, Ndiff_1D, 2):
         for j in range(0, Ndiff_1D, 2):
-            arr_value = bayer_rggb_pad[pixelOffset+i:pixelOffset+i+Hout,pixelOffset+j:pixelOffset+j+Wout]
-            arr_weight = arrOfarrLumaWeight[i][j]
+            # --- weight ---
+            arr_diff = arrOfarrLumaDiff[i][j]
+            # arr_diff /= arrCenterLuma # TODO most naive method, not ready yet, the curve in in ISP01 and in C code
+            arr_weight = 1 / ( arr_diff +  10)
             arr_weightSum += arr_weight
+
+            # --- pixel value weighted --- #
+            arr_value = bayer_rggb_pad[pixelOffset+i:pixelOffset+i+Hout,pixelOffset+j:pixelOffset+j+Wout]
             arr_valueSum += arr_weight * arr_value
     
     # ----- average ----- #
@@ -94,16 +104,21 @@ if __name__ == "__main__":
     bayer_RGGB_noisy = FlipBayerPattern2Pattern(bayer_noisy, vrfCur.m_CFAPatternNum, CFAPatternEnum.RGGB)
     bayer_RGGB_noisy = torch.from_numpy(np.ascontiguousarray(bayer_RGGB_noisy)).unsqueeze(0)
 
+    device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
+    bayer_RGGB_noisy = bayer_RGGB_noisy.to(device)
+
     # ---------- pad the vrf ---------- #
     bayer_pad = F.pad(bayer_RGGB_noisy , (rPad, rPad, rPad, rPad), mode = 'reflect')
+    # bayer_pad = bayer_pad.to(torch.int16)
     bayer_pad = bayer_pad[0]
     bayer_pad_ROI = bayer_pad[rPad:, rPad:]
 
     # ---------- TODO: NLM ---------- #
-    start_time = time.time()
-    bayer_out = NLM_rggb(bayer_pad)
-    end_time = time.time()
-    print(f'NLM spent time: {(end_time - start_time):.2f}s')
+    for iFrame in range(1):
+        start_time = time.time()
+        bayer_out = NLM_rggb(bayer_pad)
+        end_time = time.time()
+        print(f'NLM spent time: {(end_time - start_time):.2f}s')
 
     # ---------- to numpy and flip --------- #
     bayer_out = bayer_out.numpy()
