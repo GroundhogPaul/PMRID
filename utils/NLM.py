@@ -62,15 +62,15 @@ def NLM_rggb(bayer_rggb_pad):
         arrOfarrLumaDiff.append(lstOfarrLumaDiff)
 
     # ----- Get Center Luma ----- #
-    arrCenterLuma = torch.zeros((Hout, Wout), dtype=torch.float32)
-    for i in range(wCenterLuma):
-        for j in range(wCenterLuma):
-            arrCenterLuma += arrLuma[arrCenterLumaOffset+i:arrCenterLumaOffset+i+Hout, arrCenterLumaOffset+j:arrCenterLumaOffset+j+Wout]
-    arrCenterLuma /= (wCenterLuma * wCenterLuma)
+    # arrCenterLuma = torch.zeros((Hout, Wout), device = device, dtype=dtype)
+    # for i in range(wCenterLuma):
+    #     for j in range(wCenterLuma):
+    #         arrCenterLuma += arrLuma[arrCenterLumaOffset+i:arrCenterLumaOffset+i+Hout, arrCenterLumaOffset+j:arrCenterLumaOffset+j+Wout]
+    # arrCenterLuma /= (wCenterLuma * wCenterLuma)
     
     # ----- add up diff arr ----- #
-    arr_weightSum = torch.zeros(shape_out, dtype = float)
-    arr_valueSum = torch.zeros(shape_out, dtype = float) 
+    arr_weightSum = torch.zeros(shape_out, device = device, dtype = dtype)
+    arr_valueSum = torch.zeros(shape_out, device = device, dtype = dtype) 
     for i in range(0, Ndiff_1D, 2):
         for j in range(0, Ndiff_1D, 2):
             # --- weight ---
@@ -93,7 +93,8 @@ if __name__ == "__main__":
 
     # ---------- get vrf ---------- #
     # sVrfPath = "D:/image_database/jn1_mfnr_bestshot/unpacked/33/5_unpacked.vrf"
-    sVrfPath = "./testIn.vrf"
+    # sVrfPath = "./testIn.vrf"
+    sVrfPath = "./4K.vrf"
     # sVrfPath = "./1_AI_Denoise.vrf"
     assert os.path.exists(sVrfPath), f"sVrfPath does not exist: {sVrfPath}"
 
@@ -109,19 +110,19 @@ if __name__ == "__main__":
 
     # ---------- pad the vrf ---------- #
     bayer_pad = F.pad(bayer_RGGB_noisy , (rPad, rPad, rPad, rPad), mode = 'reflect')
-    # bayer_pad = bayer_pad.to(torch.int16)
+    bayer_pad = bayer_pad.to(torch.float32)
     bayer_pad = bayer_pad[0]
     bayer_pad_ROI = bayer_pad[rPad:, rPad:]
 
     # ---------- TODO: NLM ---------- #
-    for iFrame in range(1):
+    for iFrame in range(30):
         start_time = time.time()
         bayer_out = NLM_rggb(bayer_pad)
         end_time = time.time()
         print(f'NLM spent time: {(end_time - start_time):.2f}s')
 
     # ---------- to numpy and flip --------- #
-    bayer_out = bayer_out.numpy()
+    bayer_out = bayer_out.cpu().numpy()
     bayer_out = FlipBayerPattern2Pattern(bayer_out, CFAPatternEnum.RGGB, vrfCur.m_CFAPatternNum)
 
     # ---------- save the vrf ---------- #
