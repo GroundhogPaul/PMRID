@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-import torch
-import torch.nn as nn
-from collections import OrderedDict
+from pathlib import Path
+import sys, os
+curFolder = Path(__file__).resolve().parents[0]
+if str(curFolder) not in sys.path:
+    sys.path.append(str(curFolder))
+
+import utilModels
+from models.net_torch import NetworkBasic
 
 import numpy as np
-from thop import profile
+import torch
+import torch.nn as nn
 from torchinfo import summary
+from thop import profile
+from collections import OrderedDict
 
 def Conv2D(
         in_channels: int, out_channels: int,
@@ -130,7 +138,7 @@ class DecoderStage(nn.Module):
         return x + y
 
 
-class Network(nn.Module):
+class Network(NetworkBasic):
 
     def __init__(self):
         super().__init__()
@@ -171,7 +179,7 @@ class Network(nn.Module):
         pred = inp + x
         return pred
 
-class Network_Level3_ch_off_bilinear(nn.Module):
+class Network_Level3_ch_off_bilinear(NetworkBasic):
     def __init__(self, mode):
         assert mode == 'KSigma' or mode == 'Concat'
         self.mode = mode
@@ -222,8 +230,10 @@ class Network_Level3_ch_off_bilinear(nn.Module):
         pred = inp + x
         return pred
 
+
 if __name__ == "__main__":
-    net, img = Network_Level3_ch_off_bilinear(mode='Concat'), torch.randn(1, 4, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
+    # net, img = Network_Level3_ch_off_bilinear(mode='Concat'), torch.randn(1, 4, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
+    net, img = Network_Level3_ch_off_bilinear(mode='KSigma'), torch.randn(1, 4, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
     # out = net(img)
 
     # summary(net, input_size=(1, 8, 64, 64))

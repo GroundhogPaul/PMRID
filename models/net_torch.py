@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
+from pathlib import Path
+import sys, os
+curFolder = Path(__file__).resolve().parents[0]
+if str(curFolder) not in sys.path:
+    sys.path.append(str(curFolder))
+
+import numpy as np
 import torch
 import torch.nn as nn
 from thop import profile
 from torchinfo import summary
 from collections import OrderedDict
-
-import numpy as np
 
 class NetworkBasic(nn.Module):
 
