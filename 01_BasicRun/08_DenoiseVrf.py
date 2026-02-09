@@ -9,7 +9,8 @@ from utilRaw import RawUtils
 from run_benchmark import Denoiser
 from utils.KSigma import KSigma, Official_Ksigma_params 
 from utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image, CFAPatternEnum, FlipBayerPattern2Pattern
-from models.net_torch import NetworkPMRID as Network
+# from models.net_torch import NetworkPMRID as Network
+from models.net_torch_SCH import Network_Level3_ch_off_bilinear as Network
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True, max_split_size_mb:128'
 import torch
 print(f"PYTORCH_CUDA_ALLOC_CONF: {os.environ.get('PYTORCH_CUDA_ALLOC_CONF', 'Not set')}")
@@ -22,16 +23,25 @@ dgainPxy = 2
 
 # ---------- read model ---------- #
 # ----- assert ckpt paths ----- #
+model_folder, inp_scale =  "./runs/models/Huan2.4G_fiveK/top_models/", 256
+# model_name = "latest_modelK_psnr0.00_e300s358500_lr7.19e-04.pth"
+# model_name = "latest_modelK_psnr0.00_e352s420000_lr5.00e-04.pth"
+# model_name = "latest_modelK_psnr0.00_e446s532500_lr1.02e-04.pth"
+model_name = "latest_modelK_psnr0.00_e468s558300_lr1.00e-05.pth"
+
 # model_path, inp_scale =  "./models/PMRID_pretrain/top_models/torch_pretrained.ckp", 256
 # model_path, inp_scale =  "./models/PMRID_Jitter/top_models/top_model_psnr_50.57_step_505500.pth", 256
-model_path, inp_scale =  "./runs/models/PMRID_KSigmaLuoWen_1_64_16_Wholy/top_models/lateset_model_psnr_0.00_epoch_205.pth", 256
+# model_path, inp_scale =  "./runs/models/PMRID_KSigmaLuoWen_1_64_16_Wholy/top_models/lateset_model_psnr_0.00_epoch_205.pth", 256
 # model_path, inp_scale =  "./models/PMRID_JitterBright1Contrast0/top_models/top_model_psnr_50.57_step_1437000.pth", 256
 # model_path, inp_scale =  "./models/PMRID_JitterBright0Contrast1/top_models/top_model_psnr_50.46_step_322000.pth", 256
 # model_path, inp_scale =  "./models/PMRID_withBlc/top_models/top_model_psnr_49.41_step_212000.pth", 256
 # model_path, inp_scale =  "./models/PMRID_KSigma/top_models/lateset_model_psnr_0.00_epoch_1549.pth", 256
 
-pattern_epoch = r'epoch_(\d+)'
-epoch = int(re.search(pattern_epoch, model_path, re.IGNORECASE).group(1))
+
+model_path = os.path.join(model_folder, model_name)
+match = re.search(r'e(?P<epoch>\d+)s(?P<step>\d+)', model_name)
+epoch = int(match.group('epoch'))
+step = int(match.group('step'))
 
 # ----- get model name -----
 path_parts = model_path.split('/')
@@ -41,7 +51,7 @@ print("sImgSuffix = ", sImgSuffix)
 assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
 
 # ----- load ckpt ----- #
-net = Network(ChRatio=1).to(device)
+net = Network(mode="KSigma").to(device)
 net.load_CKPT(str(model_path), device=torch.device(device))
 net.eval()
 
@@ -52,17 +62,19 @@ os.makedirs(sOut_folder, exist_ok=True)
 
 # ---------- read vrf ---------- #
 # ----- glob and copy input vrf ----- #
-sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
+# sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
+sFolder = r"D:\image_database\jn1_dark"
 assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-# for idxVrf in range(33, 34):
-for idxVrf in [33, 53]:
+for idxVrf in range(1, 66):
+# for idxVrf in [33, 53]:
 
     # ---------- case 1: denoise Jn1 ---------- #
     vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
     assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
     assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
     sVrfPath = os.path.join(sFolder, vrf_files[0])
-    sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
+    sDngPath = sVrfPath.replace('.vrf', '.dng')
+    sDngCpyName = f"{idxVrf:02d}_noisy.dng"
     sVrfOutName = f"{idxVrf:02d}_{sImgSuffix}.vrf"
 
     # ---------- Case2: Denoise 'add noise to golden 4T output' ---------- #
@@ -78,8 +90,8 @@ for idxVrf in [33, 53]:
 
     # ----- read vrf info ----- #
     sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
-    sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
-    shutil.copy(sVrfPath, sVrfCpyPath)
+    sDngCpyPath =  os.path.join(sOut_folder, sDngCpyName)
+    shutil.copy(sDngPath, sDngCpyPath)
     vrfCur = vrf(sVrfPath)
     ISO = vrfCur.m_ISO
     print(f"Using ISO: {ISO}")
