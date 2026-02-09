@@ -309,9 +309,16 @@ class PMRIDRawDataset(Dataset):
         
         input_bayer_01 = torch.clamp(input_bayer_01, 0.0, 1.0)
         input_rggb_01 = RawUtils.bayer_to_rggb(input_bayer_01, "RGGB")  # to [H/2, W/2, 4] RGGB
+        input_rggb_01 = input_rggb_01.permute(2, 0, 1)
 
         # add random noise
         input_rggb_01_noisy, kSigmaCur = self.add_noise(input_rggb_01, blcClip=0)
+
+        # get var for concat training
+        k, sigma = kSigmaCur.GetKSigma(kSigmaCur.iso_last)
+        shot_noise = k / 959
+        read_noise = sigma / 959 / 959
+        variance_rggb = torch.sqrt(input_rggb_01_noisy * shot_noise + read_noise) # ----- input variance to NN
 
         # apply k sigma transform
         input_rggb_01_noisy_k = kSigmaCur(input_rggb_01_noisy, iso=kSigmaCur.iso_last, inverse=False)
@@ -326,15 +333,18 @@ class PMRIDRawDataset(Dataset):
 
         # permute to torch net format
         GT = input_rggb_01
-        GT = GT.permute(2,0,1).to(self.device)
+        # GT = GT.permute(2,0,1).to(self.device)
 
         Noisy = input_rggb_01_noisy
-        Noisy = Noisy.permute(2,0,1).to(self.device)
+        # Noisy = Noisy.permute(2,0,1).to(self.device)
 
         Noisy_Ksigma = input_rggb_01_noisy_k
-        Noisy_Ksigma = Noisy_Ksigma.permute(2,0,1).to(self.device)
+        # Noisy_Ksigma = Noisy_Ksigma.permute(2,0,1).to(self.device)
 
-        return GT, Noisy, Noisy_Ksigma, meta_data
+        Variance = variance_rggb
+        # Variance = Variance.permute(2,0,1).to(self.device)
+
+        return GT, Noisy, Noisy_Ksigma, Variance, meta_data
 
     def __len__(self):
         return len(self.filenames)
@@ -417,7 +427,7 @@ if __name__ == "__main__":
     dataset = PMRIDRawDataset(dir_pattern, device=device, bPreLoadAll=bPreLoadAll)
     train_loader = create_dataloader(dataset, 1, num_workers=0)
 
-    for batch_idx, (inputs_rggb_01_gt, inputs_rggb_01_noisy, inputs_rggb_01_noisy_k, meta_data) in enumerate(train_loader):
+    for batch_idx, (inputs_rggb_01_gt, inputs_rggb_01_noisy, inputs_rggb_01_noisy_k, variance, meta_data) in enumerate(train_loader):
         bgr888_gt = dataset.ConvertDatasetImgToBGR888(inputs_rggb_01_gt, meta_data, idx = 0)
         cv2.imwrite(f"rgb_gt_{meta_data['iso'][0]:.2f}.bmp", bgr888_gt)
 
@@ -426,6 +436,9 @@ if __name__ == "__main__":
 
         bgr888_noisy_k = dataset.ConvertDatasetImgToBGR888(inputs_rggb_01_noisy_k, meta_data, bKsigma=True, idx = 0)
         cv2.imwrite(f"rgb_noisy_k_{meta_data['iso'][0]:.2f}.bmp", bgr888_noisy_k)
+
+        bgr888_variance = dataset.ConvertDatasetImgToBGR888(variance, meta_data, idx = 0)
+        cv2.imwrite(f"rgb_variance_{meta_data['iso'][0]:.2f}.bmp", bgr888_variance)
 
         break
     print("Image saved as output.jpg")
