@@ -77,10 +77,9 @@ def NLM_rggb(bayer_rggb_pad):
         for j in range(0, Ndiff_1D, 2):
             distCol = abs(j - Ndiff_1D//2)
             weight_spatial = math.exp(-(distRow*distRow + distCol*distCol) / (2 * Ndiff_1D * Ndiff_1D / 3))
-            print("weight_spatial = ", weight_spatial)
             # --- weight ---
             arr_diff = arrOfarrLumaDiff[i][j]
-            arr_diff /= arrCenterLuma 
+            arr_diff /= arrCenterLuma  # weight_Luma
             arr_weight = 1 / ( arr_diff +  0.1)  # TODO most naive method, not ready yet, the curve in in ISP01 and in C code
             arr_weight *= weight_spatial
             arr_weightSum += arr_weight
@@ -93,6 +92,14 @@ def NLM_rggb(bayer_rggb_pad):
     bayer_out = arr_valueSum / arr_weightSum
     bayer_out = torch.round(bayer_out).to(torch.int16)
 
+    return bayer_out
+
+def NLM_rggb_withPad(bayer_rggb_noisy):
+    # ---------- pad the vrf ---------- #
+    bayer_pad = F.pad(bayer_rggb_noisy, (rPad, rPad, rPad, rPad), mode = 'reflect')
+    bayer_pad = bayer_pad.to(torch.float32)
+    bayer_pad = bayer_pad[0]
+    bayer_out = NLM_rggb(bayer_pad)
     return bayer_out
 
 if __name__ == "__main__":
@@ -114,17 +121,12 @@ if __name__ == "__main__":
     device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
     bayer_RGGB_noisy = bayer_RGGB_noisy.to(device)
 
-    # ---------- pad the vrf ---------- #
-    bayer_pad = F.pad(bayer_RGGB_noisy , (rPad, rPad, rPad, rPad), mode = 'reflect')
-    bayer_pad = bayer_pad.to(torch.float32)
-    bayer_pad = bayer_pad[0]
-    bayer_pad_ROI = bayer_pad[rPad:, rPad:]
-
-    # ---------- TODO: NLM ---------- #
     for iFrame in range(1):
+
         start_time = time.time()
-        bayer_out = NLM_rggb(bayer_pad)
+        bayer_out = NLM_rggb_withPad(bayer_RGGB_noisy)
         end_time = time.time()
+
         print(f'NLM spent time: {(end_time - start_time):.2f}s')
 
     # ---------- to numpy and flip --------- #
