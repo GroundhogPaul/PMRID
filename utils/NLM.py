@@ -2,6 +2,7 @@ import utilUtil
 import numpy as np
 import cv2
 import os
+import math
 import torch
 import torch.nn.functional as F
 from copy import deepcopy
@@ -62,21 +63,26 @@ def NLM_rggb(bayer_rggb_pad):
         arrOfarrLumaDiff.append(lstOfarrLumaDiff)
 
     # ----- Get Center Luma ----- #
-    # arrCenterLuma = torch.zeros((Hout, Wout), device = device, dtype=dtype)
-    # for i in range(wCenterLuma):
-    #     for j in range(wCenterLuma):
-    #         arrCenterLuma += arrLuma[arrCenterLumaOffset+i:arrCenterLumaOffset+i+Hout, arrCenterLumaOffset+j:arrCenterLumaOffset+j+Wout]
-    # arrCenterLuma /= (wCenterLuma * wCenterLuma)
+    arrCenterLuma = torch.zeros((Hout, Wout), device = device, dtype=dtype)
+    for i in range(wCenterLuma):
+        for j in range(wCenterLuma):
+            arrCenterLuma += arrLuma[arrCenterLumaOffset+i:arrCenterLumaOffset+i+Hout, arrCenterLumaOffset+j:arrCenterLumaOffset+j+Wout]
+    arrCenterLuma /= (wCenterLuma * wCenterLuma)
     
     # ----- add up diff arr ----- #
     arr_weightSum = torch.zeros(shape_out, device = device, dtype = dtype)
     arr_valueSum = torch.zeros(shape_out, device = device, dtype = dtype) 
     for i in range(0, Ndiff_1D, 2):
+        distRow = abs(i - Ndiff_1D//2)
         for j in range(0, Ndiff_1D, 2):
+            distCol = abs(j - Ndiff_1D//2)
+            weight_spatial = math.exp(-(distRow*distRow + distCol*distCol) / (2 * Ndiff_1D * Ndiff_1D / 3))
+            print("weight_spatial = ", weight_spatial)
             # --- weight ---
             arr_diff = arrOfarrLumaDiff[i][j]
-            # arr_diff /= arrCenterLuma # TODO most naive method, not ready yet, the curve in in ISP01 and in C code
-            arr_weight = 1 / ( arr_diff +  10)
+            arr_diff /= arrCenterLuma 
+            arr_weight = 1 / ( arr_diff +  0.1)  # TODO most naive method, not ready yet, the curve in in ISP01 and in C code
+            arr_weight *= weight_spatial
             arr_weightSum += arr_weight
 
             # --- pixel value weighted --- #
@@ -92,9 +98,9 @@ def NLM_rggb(bayer_rggb_pad):
 if __name__ == "__main__":
 
     # ---------- get vrf ---------- #
-    # sVrfPath = "D:/image_database/jn1_mfnr_bestshot/unpacked/33/5_unpacked.vrf"
+    sVrfPath = "D:/image_database/jn1_mfnr_bestshot/unpacked/33/5_unpacked.vrf"
     # sVrfPath = "./testIn.vrf"
-    sVrfPath = "./4K.vrf"
+    # sVrfPath = "./4K.vrf"
     # sVrfPath = "./1_AI_Denoise.vrf"
     assert os.path.exists(sVrfPath), f"sVrfPath does not exist: {sVrfPath}"
 
@@ -115,7 +121,7 @@ if __name__ == "__main__":
     bayer_pad_ROI = bayer_pad[rPad:, rPad:]
 
     # ---------- TODO: NLM ---------- #
-    for iFrame in range(30):
+    for iFrame in range(1):
         start_time = time.time()
         bayer_out = NLM_rggb(bayer_pad)
         end_time = time.time()
