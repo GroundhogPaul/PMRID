@@ -6,11 +6,11 @@ import os
 import re
 import cv2
 from utilRaw import RawUtils
-from run_benchmark import Denoiser
+from run_benchmark import DenoiserWithNLM
 from utils.KSigma import KSigma, Official_Ksigma_params 
+from utils.NLM import NLM_rggb_withPad
 from utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image, CFAPatternEnum, FlipBayerPattern2Pattern
-# from models.net_torch import NetworkPMRID as Network
-from models.net_torch_SCH import Network_Level3_ch_off_bilinear as Network
+from models.net_torch_SCH import Network_Level3_ch_off_bilinear_NLM as Network
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True, max_split_size_mb:128'
 import torch
 print(f"PYTORCH_CUDA_ALLOC_CONF: {os.environ.get('PYTORCH_CUDA_ALLOC_CONF', 'Not set')}")
@@ -23,8 +23,8 @@ if __name__ == '__main__':
 
     # ---------- read model ---------- #
     # ----- assert ckpt paths ----- #
-    model_folder, inp_scale =  "./runs/models/Huan2.4G_fiveK_subset230_default_color/top_models/", 256
-    model_name = "latest_modelK_psnr0.00_e7803s218500_lr5.00e-04.pth"
+    model_folder, inp_scale =  "./runs/models/Huan2.4G_fiveK_withNLM_AddBackNoisy/top_models/", 256
+    model_name = "latest_modelK_psnr0.00_e273s162900_lr5.00e-04.pth"
 
     model_path = os.path.join(model_folder, model_name)
     assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
@@ -94,6 +94,14 @@ if __name__ == '__main__':
         bayer01_RGGB_noisy = FlipBayerPattern2Pattern(bayer01_GRBG_noisy, vrfCur.m_CFAPatternNum, CFAPatternEnum.RGGB)
         bayer01_RGGB_noisy = torch.from_numpy(np.ascontiguousarray(bayer01_RGGB_noisy)).to(device)
 
+        # ----- NLM ---- #
+        bayer_GRBG_noisy = vrfCur.m_raw
+        bayer_RGGB_noisy = FlipBayerPattern2Pattern(bayer_GRBG_noisy, vrfCur.m_CFAPatternNum, CFAPatternEnum.RGGB)
+        bayer_RGGB_noisy = torch.from_numpy(np.ascontiguousarray(bayer_RGGB_noisy)).unsqueeze(0)
+        bayer_RGGB_NLM = NLM_rggb_withPad(bayer_RGGB_noisy)
+
+        bayer01_RGGB_NLM = torch.clamp(bayer_RGGB_NLM - black_level, 0, white_level).to(torch.float32)/white_level
+
         # ---------- Denoise ---------- #
         kSigma = KSigma(
             K_coeff=Official_Ksigma_params["K_coeff"],
@@ -103,9 +111,9 @@ if __name__ == '__main__':
             # sigma = 1.265e-05 * 1023 * 1023, 
         )
 
-        DenoiserCur = Denoiser(net, kSigma, device, inp_scale=inp_scale)
+        DenoiserCur = DenoiserWithNLM(net, kSigma, device, inp_scale=inp_scale)
 
-        bayer01_RGGB_denoise = DenoiserCur.run(bayer01_RGGB_noisy, iso=ISO)
+        bayer01_RGGB_denoise = DenoiserCur.run(bayer01_RGGB_noisy, bayer01_RGGB_NLM, iso=ISO)
         bayer01_RGGB_denoise = bayer01_RGGB_denoise.cpu().numpy() 
         bayer01_RGGB_denoise = np.clip(bayer01_RGGB_denoise, 0.0, 1.0)
 
