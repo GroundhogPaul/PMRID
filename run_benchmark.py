@@ -70,6 +70,29 @@ class Denoiser:
         pred_HW = self.ksigma(pred_HW_ksigma, iso, inverse=True)
         return pred_HW
 
+class DenoiserWithNLM(Denoiser):
+    def run(self, bayer_01: np.ndarray, bayer_NLM_01: np.ndarray, iso: float):
+
+        # ----- pre-process ----- #
+        rggb01_BChHW = self.pre_process(bayer_01)
+        rggb01_BChHW_ksigma = self.ksigma(rggb01_BChHW, iso)
+        rggb_BChHW_ksigma = rggb01_BChHW_ksigma * self.inp_scale
+
+        rggb01_NLM_BChHW = self.pre_process(bayer_NLM_01)
+        rggb01_NLM_BChHW_ksigma = self.ksigma(rggb01_NLM_BChHW, iso)
+        rggb_NLM_BChHW_ksigma = rggb01_NLM_BChHW_ksigma * self.inp_scale
+
+        # ----- process ----- #
+        pred_ChHW_ksigma = self.net(rggb_BChHW_ksigma, rggb_NLM_BChHW_ksigma) / self.inp_scale
+
+        # ----- post-process ----- #
+        pred_ChHW_ksigma = pred_ChHW_ksigma.detach()
+        pred_HW_ksigma = self.post_process(pred_ChHW_ksigma)
+        pred_HW = self.ksigma(pred_HW_ksigma, iso, inverse=True)
+
+        return pred_HW
+
+
 
 def run_benchmark(model_path, bm_loader: BenchmarkLoader):
 

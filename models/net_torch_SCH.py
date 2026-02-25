@@ -11,6 +11,7 @@ from models.net_torch import NetworkBasic
 import numpy as np
 import torch
 import torch.nn as nn
+import time
 from torchinfo import summary
 from thop import profile
 from collections import OrderedDict
@@ -204,6 +205,12 @@ class Network_Level3_ch_off_bilinear_NLM(NetworkBasic):
 
         self.out0 = DecoderBlock(in_channels=16, out_channels=16, kernel_size=3)
         self.out1 = Conv2D(in_channels=16, out_channels=4, kernel_size=3, stride=1, padding=1, is_seperable=False, has_relu=False)
+        
+        
+        print("\n   !!!!! Network with NLM !!!!!!  ")
+        print("   !!!!! Current add on \033[91mNLM\033[0m !!!!!!  \n")
+        # print("   !!!!! Current add on \033[91mNOISY\033[0m !!!!!!  \n")
+        time.sleep(3)
 
     def forward(self, inp, NLM, var=None):
         if self.mode == 'KSigma':
@@ -227,7 +234,8 @@ class Network_Level3_ch_off_bilinear_NLM(NetworkBasic):
         x = self.out0(x)
         x = self.out1(x)
 
-        pred = inp + x
+        pred = NLM + x
+        # pred = inp + x
         return pred
 
 class Network_Level3_ch_off_bilinear(NetworkBasic):
