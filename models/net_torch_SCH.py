@@ -179,6 +179,57 @@ class Network(NetworkBasic):
         pred = inp + x
         return pred
 
+class Network_Level3_ch_off_bilinear_NLM(NetworkBasic):
+    def __init__(self, mode):
+        assert mode == 'KSigma' or mode == 'Concat'
+        self.mode = mode
+
+        super().__init__()
+        if self.mode == 'KSigma':
+            self.conv0 = Conv2D(in_channels=8, out_channels=16, kernel_size=3, padding=1, stride=1, is_seperable=False, has_relu=True)
+        elif self.mode == 'Concat':
+            self.conv0 = Conv2D(in_channels=12, out_channels=16, kernel_size=3, padding=1, stride=1, is_seperable=False, has_relu=True)
+        else:
+            assert False
+
+        self.enc1 = EncoderStage(in_channels=16, out_channels=32, num_blocks=2) # kernel size = 3
+        self.enc2 = EncoderStage(in_channels=32, out_channels=32, num_blocks=2) # kernel size = 3
+        self.enc3 = EncoderStage(in_channels=32, out_channels=32, num_blocks=2) # kernel size = 3
+
+        self.encdec = Conv2D(in_channels=32, out_channels=32, kernel_size=3, padding=1, stride=1, is_seperable=True, has_relu=True)
+        
+        self.dec1 = DecoderStage(in_channels=32, skip_in_channels=32, out_channels=32)
+        self.dec2 = DecoderStage(in_channels=32, skip_in_channels=32, out_channels=16)
+        self.dec3 = DecoderStage(in_channels=16, skip_in_channels=16, out_channels=16)
+
+        self.out0 = DecoderBlock(in_channels=16, out_channels=16, kernel_size=3)
+        self.out1 = Conv2D(in_channels=16, out_channels=4, kernel_size=3, stride=1, padding=1, is_seperable=False, has_relu=False)
+
+    def forward(self, inp, NLM, var=None):
+        if self.mode == 'KSigma':
+            x = torch.cat([inp, NLM], dim = 1) 
+        elif self.mode == 'Concat':
+            x = torch.cat([inp, var, NLM], dim=1)
+        else:
+            assert False
+        
+        conv0 = self.conv0(x)
+        conv1 = self.enc1(conv0)
+        conv2 = self.enc2(conv1)
+        conv3 = self.enc3(conv2)
+
+        conv4 = self.encdec(conv3)
+
+        up2 = self.dec1((conv4, conv2))
+        up1 = self.dec2((up2, conv1))
+        x = self.dec3((up1, conv0))
+
+        x = self.out0(x)
+        x = self.out1(x)
+
+        pred = inp + x
+        return pred
+
 class Network_Level3_ch_off_bilinear(NetworkBasic):
     def __init__(self, mode):
         assert mode == 'KSigma' or mode == 'Concat'
