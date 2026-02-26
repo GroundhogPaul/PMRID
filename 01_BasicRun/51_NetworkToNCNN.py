@@ -31,7 +31,8 @@ if __name__ == '__main__':
     # ----- get model name -----
     path_parts = model_path.split('/')
     models_index = path_parts.index('models')
-    sImgSuffix = path_parts[models_index + 1] + f"_netK{epoch}"
+    # sImgSuffix = path_parts[models_index + 1] + f"_netK{epoch}"
+    sImgSuffix = "HuanKSigma"
     print("sImgSuffix = ", sImgSuffix)
     assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
 
@@ -43,6 +44,9 @@ if __name__ == '__main__':
     net.load_CKPT(str(model_path), device=torch.device(device))
     net.eval()
 
-    dummy_input = torch.randn(1, 4, Wout//2, Hout//2).to(device)
+    dummy_input = torch.randn(1, 4, Hout//2, Wout//2).to(device)
+
+    print(dummy_input.shape)
+    print(dummy_input.dtype)
 
     opt_model = pnnx.export(net, sImgSuffix, dummy_input)
