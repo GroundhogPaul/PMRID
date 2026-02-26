@@ -105,7 +105,13 @@ if __name__ == '__main__':
 
         DenoiserCur = Denoiser(net, kSigma, device, inp_scale=inp_scale)
 
-        bayer01_RGGB_denoise = DenoiserCur.run(bayer01_RGGB_noisy, iso=ISO)
+        BChHW01_RGGB_noisy = DenoiserCur.pre_process(bayer01_RGGB_noisy)
+        BChHW01_RGGB_noisy_k = kSigma(BChHW01_RGGB_noisy, ISO) * inp_scale
+        BChHW01_RGGB_pred_k = net(BChHW01_RGGB_noisy_k ) / inp_scale
+        BChHW01_RGGB_pred_k= BChHW01_RGGB_pred_k.detach()
+        BChHW01_RGGB_pred = kSigma(BChHW01_RGGB_pred_k, ISO, inverse = True)
+        bayer01_RGGB_denoise = DenoiserCur.post_process(BChHW01_RGGB_pred)
+
         bayer01_RGGB_denoise = bayer01_RGGB_denoise.cpu().numpy() 
         bayer01_RGGB_denoise = np.clip(bayer01_RGGB_denoise, 0.0, 1.0)
 

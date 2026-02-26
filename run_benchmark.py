@@ -20,7 +20,8 @@ from benchmark import BenchmarkLoader, RawMeta
 class Denoiser:
 
     def __init__(self, net: Network, ksigma: KSigma, device, inp_scale=256.0):
-        net.eval()
+        if net is not None:
+            net.eval()
 
         self.net = net
         self.ksigma = ksigma
@@ -28,12 +29,13 @@ class Denoiser:
         self.device = device
 
     def pre_process(self, bayer_01: np.ndarray): # 1. bayer to rggb; 2. pad to 32 multiple; 3. HWCh to BChHW
+        assert len(bayer_01.shape) == 2
         rggb01_HWCh = RawUtils.bayer2rggb(bayer_01)
         print(torch.min(rggb01_HWCh))
         # rggb01_HWCh = rggb01_HWCh.clip(0, 1)
 
         H, W = rggb01_HWCh.shape[:2]
-        ph, pw = (32-(H % 32))//2, (32-(W % 32))//2
+        ph, pw = (32-(H % 32))//2, (32-(W % 32))//2 # always pad in the middle
         self.ph, self.pw = ph, pw
         if hasattr(rggb01_HWCh, 'permute'):    # Pytorch
             rggb01_HWCh = F.pad(rggb01_HWCh, (0, 0, pw, pw, ph, ph), mode='constant', value=0)
@@ -59,6 +61,7 @@ class Denoiser:
         return RawUtils.rggb2bayer(pred_HWCh)
 
     def run(self, bayer_01: np.ndarray, iso: float):
+        assert self.net is not None, "if self.net is None, only use the Pre and Pro api of this class"
         rggb01_BChHW = self.pre_process(bayer_01)
         rggb01_BChHW_ksigma = self.ksigma(rggb01_BChHW, iso)
 
