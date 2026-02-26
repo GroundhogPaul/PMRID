@@ -28,14 +28,16 @@ class Denoiser:
         self.inp_scale = inp_scale
         self.device = device
 
-    def pre_process(self, bayer_01: np.ndarray): # 1. bayer to rggb; 2. pad to 32 multiple; 3. HWCh to BChHW
+    def pre_process(self, bayer_01: np.ndarray, padW = 32, padH = 32): # 1. bayer to rggb; 2. pad to 32 multiple; 3. HWCh to BChHW
         assert len(bayer_01.shape) == 2
+        assert padW % 32 == 0
+        assert padH % 32 == 0
         rggb01_HWCh = RawUtils.bayer2rggb(bayer_01)
         print(torch.min(rggb01_HWCh))
         # rggb01_HWCh = rggb01_HWCh.clip(0, 1)
 
         H, W = rggb01_HWCh.shape[:2]
-        ph, pw = (32-(H % 32))//2, (32-(W % 32))//2 # always pad in the middle
+        ph, pw = (padH-(H % padH))//2, (padW-(W % padW))//2 # always pad in the middle
         self.ph, self.pw = ph, pw
         if hasattr(rggb01_HWCh, 'permute'):    # Pytorch
             rggb01_HWCh = F.pad(rggb01_HWCh, (0, 0, pw, pw, ph, ph), mode='constant', value=0)
