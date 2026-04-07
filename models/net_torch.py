@@ -14,7 +14,10 @@ from collections import OrderedDict
 
 class NetworkBasic(nn.Module):
 
-    def __init__(self):
+    def __init__(self, mode):
+        assert mode == 'KSigma' or mode == 'Concat'
+        self.mode = mode
+
         super().__init__()
     
     def load_CKPT(self, sCKPT: str, device: torch.device):
@@ -56,6 +59,7 @@ def Conv2D(
         in_channels: int, out_channels: int,
         kernel_size: int, stride: int, padding: int,
         is_seperable: bool = False, has_relu: bool = False,
+        is_group: bool = False, Ch_group: int = 8
 ):
     modules = OrderedDict()
 
@@ -102,6 +106,20 @@ class EncoderBlock(nn.Module):
         x = x + proj
         return self.relu(x)
 
+class EncoderBlock_3x3(EncoderBlock):
+
+    def __init__(self, in_channels: int, mid_channels: int, out_channels: int, stride: int = 1):
+        super().__init__(in_channels, mid_channels, out_channels, stride)
+
+        self.conv1 = Conv2D(in_channels, mid_channels, kernel_size=3, stride=stride, padding=1, is_seperable=True, has_relu=True)
+        self.conv2 = Conv2D(mid_channels, out_channels, kernel_size=3, stride=1, padding=1, is_seperable=True, has_relu=False)
+
+        self.proj = (
+            nn.Identity()
+            if stride == 1 and in_channels == out_channels else
+            Conv2D(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, is_seperable=True, has_relu=False)
+        )
+        self.relu = nn.ReLU()
 
 def EncoderStage(in_channels: int, out_channels: int, num_blocks: int):
 
@@ -123,6 +141,27 @@ def EncoderStage(in_channels: int, out_channels: int, num_blocks: int):
             )
         )
 
+    return nn.Sequential(*blocks)
+
+def EncoderStage_3x3(in_channels: int, out_channels: int, num_blocks: int):
+
+    blocks = [
+        EncoderBlock_3x3(
+            in_channels=in_channels,
+            mid_channels=out_channels//4,
+            out_channels=out_channels,
+            stride=2,
+        )
+    ]
+    for _ in range(num_blocks-1):
+        blocks.append(
+            EncoderBlock_3x3(
+                in_channels=out_channels,
+                mid_channels=out_channels//4,
+                out_channels=out_channels,
+                stride=1,
+            )
+        )
     return nn.Sequential(*blocks)
 
 
@@ -148,14 +187,22 @@ class DecoderBlock(nn.Module):
         x = x + inp
         return x
 
-
 class DecoderStage(nn.Module):
 
-    def __init__(self, in_channels: int, skip_in_channels: int, out_channels: int):
+    def __init__(self, in_channels: int, skip_in_channels: int, out_channels: int, upsample:str):
         super().__init__()
+        assert upsample == 'Bilinear' or upsample == 'ConvTranspose'
 
         self.decode_conv = DecoderBlock(in_channels, in_channels, kernel_size=3)
-        self.upsample = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2, padding=0)
+
+        if upsample == 'Bilinear':
+            self.upsample = nn.Sequential(nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0),
+                                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False))
+        elif upsample == 'ConvTranpose':
+            self.upsample = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2, padding=0)
+        else:
+            assert False, "undefined upsample method"
+
         self.proj_conv = Conv2D(skip_in_channels, out_channels, kernel_size=3, stride=1, padding=1, is_seperable=True, has_relu=True)
         # M.init.msra_normal_(self.upsample.weight, mode='fan_in', nonlinearity='linear')
 
