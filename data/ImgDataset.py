@@ -51,13 +51,14 @@ class CropDatasetBasic(Dataset):
 
     def __getitem__(self, index):
         raise NotImplementedError("CropDatasetBasic is an abstract class, please implement __getitem__ method in the subclass")
+    
+    def __len__(self):
+        return len(self.imgPaths)
 
 class CropDatasetVrf(CropDatasetBasic):
-    def __init__(self, lstImgPattern, Hbayer, Wbayer, clipNeg=True, device = 'cpu'):
+    def __init__(self, lstImgPattern, Hbayer, Wbayer, device = 'cpu'):
         super().__init__(lstImgPattern, Hbayer, Wbayer, device=device)
     
-        self.clipNeg = clipNeg
-
     def random_crop_and_flip(self, input_bayer:np.ndarray, bayer_pattern_enum, H_crop=1024, W_crop=1024, p_flip_ud=0.5, p_flip_lr=0.5, p_transpose=0.5) -> np.ndarray:
         # Random flip and crop a bayter-patterned image, and normalize the bayer pattern to RGGB.
         if len(input_bayer.shape) == 2:
@@ -137,15 +138,9 @@ class CropDatasetVrf(CropDatasetBasic):
         rggb_crop = RawUtils.bayer_to_rggb(bayer_crop_RGGB, "RGGB")  # to [H/2, W/2, 4] RGGB
         rggb_crop = (rggb_crop.float() - black_level) / white_level  # to [0, 1]
 
-        if self.clipNeg:
-            rggb_crop = torch.clamp(rggb_crop, 0, 1)
-        else:
-            rggb_crop = torch.clamp(rggb_crop, -1, 1)
+        rggb_crop = torch.clamp(rggb_crop, 0, 1)
 
         return rggb_crop, meta_data
-
-    def __len__(self):
-        return len(self.filenames)
     
     def rggb01_2_bgr888(self, rggb, meta_data):
         wb_gain = meta_data['wb_gain']
@@ -169,11 +164,11 @@ class CropDatasetJpg(CropDatasetBasic):
 
         # ----- pad to bigger than net work size ----- //
         h, w, c = img.shape
-        pad_h = max(0, self.Hrggb - h)   # 需要 pad 的行数（底部）
-        pad_w = max(0, self.Wrggb - w)   # 需要 pad 的列数（右侧）
+        pad_h = max(0, self.Hrggb - h)
+        pad_w = max(0, self.Wrggb - w)
 
         if pad_h > 0 or pad_w > 0:
-            img = F.pad(img, (0, pad_w, 0, pad_h))  # 在右侧 pad pad_w 列，底部 pad pad_h 行
+            img = F.pad(img, (0, 0, 0, pad_w, 0, pad_h), mode = 'constant', value=127)
 
         # ----- crop to network size ----- #
         h, w, c = img.shape   # 此时 h >= self.Hrggb, w >= self.Wrggb
@@ -203,24 +198,21 @@ class CropDatasetJpg(CropDatasetBasic):
         return bgr888
         
 if __name__ == "__main__":
-    # --------- test vrf ---------- #
-    # # dir_pattern, bPreLoadAll, device = "D:/image_database/SID/SID/Sony/long_test/*.ARW", True, 'cuda:2'
-    # # dir_pattern, bPreLoadAll, device = "D:/users/xiaoyaopan/PxyAI/DataSet/Raw/Wholy/*.ARW", False, 'cpu'
-    dir_pattern, bPreLoadAll, device = "D:/image_database/SID/SID/Sony/longVRFmini/*.vrf", True, 'cuda:2'
-    device = torch.device(device if torch.cuda.is_available() else 'cpu')
-
     seed = 39
     torch.manual_seed(seed)
     np.random.seed(seed)
+    device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
 
-    dataset = CropDatasetVrf(dir_pattern, Hbayer=1024, Wbayer=1024, device=device)
-    input_rggb, meta_data = dataset[0][0], dataset[0][1]
-    bgr888 = dataset.rggb01_2_bgr888(input_rggb, meta_data)
-    cv2.imwrite("test_CropDatasetVrf.jpg", bgr888)
+    # --------- test vrf ---------- #
+    # dir_pattern = "D:/image_database/SID/SID/Sony/longVRFmini/*.vrf"
+    # dataset = CropDatasetVrf(dir_pattern, Hbayer=1024, Wbayer=1024, device=device)
+    # input_rggb, meta_data = dataset[0]
+    # bgr888 = dataset.rggb01_2_bgr888(input_rggb, meta_data)
+    # cv2.imwrite("test_CropDatasetVrf.jpg", bgr888)
 
     # --------- test jpg ---------- #
     dir_pattern = "D:/image_database/mirflickr25k/mirflickr/*.jpg"
-    dataset = CropDatasetJpg(dir_pattern, Hbayer=512, Wbayer=512, device='cpu')
+    dataset = CropDatasetJpg(dir_pattern, Hbayer=1024, Wbayer=1024, device=device)
     input_rggb, meta_data = dataset[1]
     bgr888 = dataset.rggb01_2_bgr888(input_rggb, meta_data, bCPU = True)
     cv2.imwrite("test_CropDatasetJpg.jpg", bgr888)
