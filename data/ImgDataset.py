@@ -168,7 +168,9 @@ class CropDatasetJpg(CropDatasetBasic):
         pad_w = max(0, self.Wrggb - w)
 
         if pad_h > 0 or pad_w > 0:
-            img = F.pad(img, (0, 0, 0, pad_w, 0, pad_h), mode = 'constant', value=127)
+            img_nchw = img.permute(2, 0, 1).unsqueeze(0)
+            padded_nchw = F.pad(img_nchw, (0, pad_w, 0, pad_h), mode='reflect')
+            img = padded_nchw.squeeze(0).permute(1, 2, 0)
 
         # ----- crop to network size ----- #
         h, w, c = img.shape   # 此时 h >= self.Hrggb, w >= self.Wrggb
