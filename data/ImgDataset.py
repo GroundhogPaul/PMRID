@@ -142,11 +142,13 @@ class CropDatasetVrf(CropDatasetBasic):
 
         return HWCh4n, meta_data
     
-    def HWCh4n_2_bgr888(self, HWCh4n, meta_data):
+    def HWCh4n_2_bgr888(self, HWCh4n, meta_data, bCPU = True):
         wb_gain = meta_data['wb_gain']
         CCM = meta_data['ccm3x3']
         rgb = RawUtils.bayer01_2_rgb01(
             RawUtils.rggb2bayer(HWCh4n), wb_gain=wb_gain, CCM=CCM, gamma = 2.2)
+        
+        # if bCPU: # not used because always on cpu after 'RawUtils.bayer01_2_rgb01'
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         bgr888 = (bgr*255.0).astype(np.uint8)
 

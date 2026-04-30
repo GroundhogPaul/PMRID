@@ -26,7 +26,6 @@ import math
 import time
 from utilBasic import print_gpu_memory_stats
 
-from ImgDataset import CropDatasetVrf, CropDatasetJpg
 from RawDataset import RawDatasetBasic
 from AddNoise import add_noise_Concat
 
@@ -96,17 +95,21 @@ if __name__ == "__main__":
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
 
     # ----- test vrf ----- #
-    # Hbayer, Wbayer = 1024, 1024
-    # dir_pattern = "D:/image_database/SID/SID/Sony/longVRFmini/*.vrf"
-    # dataset = RawDatasetBasic(dir_pattern, Hbayer, Wbayer, device=device, CropDataset=CropDatasetVrf)
-    # train_loader = create_dataloader(dataset, 1, num_workers=0)
+    Hbayer, Wbayer = 1024, 1024
+    dir_pattern = "D:/image_database/SID/SID/Sony/longVRFmini/*.vrf"
+
+    from ImgDataset import CropDatasetVrf
+    dataset = RawDatasetTimBrooks(dir_pattern, Hbayer, Wbayer, device=device, CropDataset=CropDatasetVrf)
 
     # ----- test jpg ----- #
-    Hbayer, Wbayer = 512, 512
-    dir_pattern = "D:/image_database/mirflickr25k/mirflickr/*.jpg"
-    dataset = RawDatasetTimBrooks(dir_pattern, Hbayer, Wbayer, device=device, CropDataset=CropDatasetJpg)
-    train_loader = create_dataloader(dataset, 4, num_workers=0)
+    # Hbayer, Wbayer = 512, 512
+    # dir_pattern = "D:/image_database/mirflickr25k/mirflickr/*.jpg"
 
+    # from ImgDataset import CropDatasetJpg
+    # dataset = RawDatasetTimBrooks(dir_pattern, Hbayer, Wbayer, device=device, CropDataset=CropDatasetJpg)
+
+    # ----- visualize ----- #
+    train_loader = create_dataloader(dataset, 4, num_workers=0)
     for batch_idx, (BChHW_gt, BChHW_noisy, BChHW_var, meta_datas) in enumerate(train_loader):
 
         bgr888_gt = dataset.ChHW4n_2_bgr888(BChHW_gt[0], meta_datas[0], True)
