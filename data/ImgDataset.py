@@ -135,18 +135,18 @@ class CropDatasetVrf(CropDatasetBasic):
             'ccm3x3': ccm3x3
         }
 
-        rggb_crop = RawUtils.bayer_to_rggb(bayer_crop_RGGB, "RGGB")  # to [H/2, W/2, 4] RGGB
-        rggb_crop = (rggb_crop.float() - black_level) / white_level  # to [0, 1]
+        HWCh4 = RawUtils.bayer_to_rggb(bayer_crop_RGGB, "RGGB")  # to [H/2, W/2, 4] RGGB
+        HWCh4n = (HWCh4.float() - black_level) / white_level  # to [0, 1]
 
-        rggb_crop = torch.clamp(rggb_crop, 0, 1)
+        HWCh4n = torch.clamp(HWCh4n, 0, 1)
 
-        return rggb_crop, meta_data
+        return HWCh4n, meta_data
     
-    def rggb01_2_bgr888(self, rggb, meta_data):
+    def HWCh4n_2_bgr888(self, HWCh4n, meta_data):
         wb_gain = meta_data['wb_gain']
         CCM = meta_data['ccm3x3']
         rgb = RawUtils.bayer01_2_rgb01(
-            RawUtils.rggb2bayer(rggb), wb_gain=wb_gain, CCM=CCM, gamma = 2.2)
+            RawUtils.rggb2bayer(HWCh4n), wb_gain=wb_gain, CCM=CCM, gamma = 2.2)
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         bgr888 = (bgr*255.0).astype(np.uint8)
 
@@ -158,41 +158,40 @@ class CropDatasetJpg(CropDatasetBasic):
     
     def __getitem__(self, index):
         img_path = self.imgPaths[index]
-        img = cv2.imread(img_path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = torch.from_numpy(img).to(self.device)
+        rgb888 = cv2.imread(img_path)
+        bgr888 = cv2.cvtColor(rgb888, cv2.COLOR_BGR2RGB)
+        bgr888 = torch.from_numpy(bgr888).to(self.device)
 
         # ----- pad to bigger than net work size ----- //
-        h, w, c = img.shape
+        h, w, _ = bgr888.shape
         pad_h = max(0, self.Hrggb - h)
         pad_w = max(0, self.Wrggb - w)
 
         if pad_h > 0 or pad_w > 0:
-            img_nchw = img.permute(2, 0, 1).unsqueeze(0)
+            img_nchw = bgr888.permute(2, 0, 1).unsqueeze(0)
             padded_nchw = F.pad(img_nchw, (0, pad_w, 0, pad_h), mode='reflect')
-            img = padded_nchw.squeeze(0).permute(1, 2, 0)
+            bgr888 = padded_nchw.squeeze(0).permute(1, 2, 0)
 
         # ----- crop to network size ----- #
-        h, w, c = img.shape   # 此时 h >= self.Hrggb, w >= self.Wrggb
+        h, w, _ = bgr888.shape   # 此时 h >= self.Hrggb, w >= self.Wrggb
         top = torch.randint(0, h - self.Hrggb + 1, (1,)).item()
         left = torch.randint(0, w - self.Wrggb + 1, (1,)).item()
-        img = img[top:top + self.Hrggb, left:left + self.Wrggb, :]
+        bgr888 = bgr888[top:top + self.Hrggb, left:left + self.Wrggb, :]
         
         # ----- flip -----
         if torch.rand(1) < 0.5:
-            img = torch.flip(img, dims=[-2])  # 倒数第二维是宽度W
+            bgr888 = torch.flip(bgr888, dims=[-2])
         if torch.rand(1) < 0.5:
-            img = torch.flip(img, dims=[-3])  # 倒数第三维是高度H
+            bgr888 = torch.flip(bgr888, dims=[-3])
         if torch.rand(1) < 0.5:
-            dim_order = list(range(img.dim()))
+            dim_order = list(range(bgr888.dim()))
             dim_order[-3], dim_order[-2] = dim_order[-2], dim_order[-3]
-            img = img.permute(dim_order)
+            bgr888 = bgr888.permute(dim_order)
         
-        img, meta_data = unprocess(img)
+        HWCh4n, meta_data = unprocess(bgr888)
+        return HWCh4n, meta_data
 
-        return img, meta_data
-
-    def rggb01_2_bgr888(self, rggb, meta_data, bCPU=True):
+    def HWCh4n_2_bgr888(self, rggb, meta_data, bCPU=True):
         assert isinstance(rggb, torch.Tensor)
         bgr888 = process_meta_data(rggb, meta_data)
         if bCPU:
@@ -206,15 +205,15 @@ if __name__ == "__main__":
     device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
 
     # --------- test vrf ---------- #
-    # dir_pattern = "D:/image_database/SID/SID/Sony/longVRFmini/*.vrf"
-    # dataset = CropDatasetVrf(dir_pattern, Hbayer=1024, Wbayer=1024, device=device)
-    # input_rggb, meta_data = dataset[0]
-    # bgr888 = dataset.rggb01_2_bgr888(input_rggb, meta_data)
-    # cv2.imwrite("test_CropDatasetVrf.jpg", bgr888)
+    dir_pattern = "D:/image_database/SID/SID/Sony/longVRFmini/*.vrf"
+    dataset = CropDatasetVrf(dir_pattern, Hbayer=1024, Wbayer=1024, device=device)
+    HWCh4n, meta_data = dataset[0]
+    bgr888 = dataset.HWCh4n_2_bgr888(HWCh4n, meta_data)
+    cv2.imwrite("test_CropDatasetVrf.jpg", bgr888)
 
     # --------- test jpg ---------- #
-    dir_pattern = "D:/image_database/mirflickr25k/mirflickr/*.jpg"
-    dataset = CropDatasetJpg(dir_pattern, Hbayer=1024, Wbayer=1024, device=device)
-    input_rggb, meta_data = dataset[1]
-    bgr888 = dataset.rggb01_2_bgr888(input_rggb, meta_data, bCPU = True)
-    cv2.imwrite("test_CropDatasetJpg.jpg", bgr888)
+    # dir_pattern = "D:/image_database/mirflickr25k/mirflickr/*.jpg"
+    # dataset = CropDatasetJpg(dir_pattern, Hbayer=1024, Wbayer=1024, device=device)
+    # input_rggb, meta_data = dataset[1]
+    # bgr888 = dataset.HWCh4n_2_bgr888(input_rggb, meta_data, bCPU = True)
+    # cv2.imwrite("test_CropDatasetJpg.jpg", bgr888)

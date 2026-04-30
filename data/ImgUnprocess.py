@@ -165,17 +165,17 @@ def mosaic(image):
     H, W = shape[0], shape[1]
     return stacked.reshape(H // 2, W // 2, 4)
 
-def unprocess(image):
-    assert isinstance(image, torch.Tensor), "Input must be a torch tensor"
-    assert len(image.shape) == 3
-    assert image.shape[2] == 3
+def unprocess(bgr888):
+    assert isinstance(bgr888, torch.Tensor), "Input must be a torch tensor"
+    assert len(bgr888.shape) == 3
+    assert bgr888.shape[2] == 3
 
     # Randomly creates image metadata.
-    ccm = random_ccm(image.device)
-    rgb_gain, red_gain, blue_gain = random_gains(image.device)
+    ccm = random_ccm(bgr888.device)
+    rgb_gain, red_gain, blue_gain = random_gains(bgr888.device)
 
     # ---------- if use LUT ---------- #
-    image = InverseSmoothStep_GammaExpansion_LUT(image)
+    HWCh3n = InverseSmoothStep_GammaExpansion_LUT(bgr888)
     # ---------- if not use LUT ---------- #
     # Approximately inverts global tone mapping.
     # image = image / 255.0
@@ -186,16 +186,16 @@ def unprocess(image):
     # ccm = torch.tensor([[1,0,0],[0,1,0],[0,0,1]], dtype=image.dtype)
     # ---------- LUT end ---------- #
 
-    image = apply_ccm(image, ccm)
+    HWCh3n = apply_ccm(HWCh3n, ccm)
     # Approximately inverts white balance and brightening.
-    image, safe_gains = safe_invert_gains(image, rgb_gain, red_gain, blue_gain)
+    HWCh3n, safe_gains = safe_invert_gains(HWCh3n, rgb_gain, red_gain, blue_gain)
     # # Clips saturated pixels.
-    image = torch.clamp(image, 0.0, 1.0)
+    HWCh3n = torch.clamp(HWCh3n, 0.0, 1.0)
     # # Applies a Bayer mosaic.
-    image = mosaic(image)
+    HWCh4n = mosaic(HWCh3n)
 
     metadata = {
         'ccm3x3': torch.inverse(ccm),
         'safe_gains': safe_gains, # the really used "WB gain * DGain" is here
     }
-    return image, metadata
+    return HWCh4n, metadata

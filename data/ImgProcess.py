@@ -5,7 +5,6 @@ from ImgUnprocess import unprocess
 def apply_gains(bayer_images, red_gains, blue_gains):
     assert bayer_images.shape[-1] == 4
     dim = len(bayer_images.shape)
-    assert dim == 3 or dim == 4
     assert dim == 3
 
     green_gains = torch.ones_like(red_gains)
@@ -91,6 +90,7 @@ def gamma_compression(images, gamma=2.2):
     return clamped ** (1.0 / gamma)
 
 def process(bayer_images, cam2rgbs, safe_gains):
+    assert isinstance(bayer_images, torch.Tensor), "Input must be a torch tensor"
     assert bayer_images.shape[-1] == 4
     dim = bayer_images.dim()
     assert dim == 3 or dim == 4
@@ -133,12 +133,12 @@ if __name__ == '__main__':
     import cv2
 
     img_path = 'im1.jpg'
-    img = cv2.imread(img_path)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    rgb888 = cv2.imread(img_path)
+    bgr888 = cv2.cvtColor(rgb888, cv2.COLOR_BGR2RGB)
     device = 'cpu'
-    imgIn = torch.from_numpy(img).to(device)
+    bgr888 = torch.from_numpy(bgr888).to(device)
 
-    HWCh, meta_data = unprocess(imgIn)
-    imgOut = process_meta_data(HWCh, meta_data)
-    imgOut = imgOut.cpu().numpy()  # (H, W, 3)
-    cv2.imwrite("img1_out.jpg", imgOut)
+    HWCh4n, meta_data = unprocess(bgr888)
+    bgr888out = process_meta_data(HWCh4n, meta_data)
+    bgr888out = bgr888out.cpu().numpy()  # (H, W, 3)
+    cv2.imwrite("img1_out.jpg", bgr888out)
