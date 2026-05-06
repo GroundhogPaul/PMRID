@@ -12,6 +12,7 @@ from collections import defaultdict
 import argparse
 import cv2
 
+from data.RawDataset import DumpBgr888
 from data.RawDatasetTimBrooks import RawDatasetTimBrooks, create_dataloader
 from benchmark import BenchmarkLoader
 # from run_benchmark import Denoiser, KSigma, Official_Ksigma_params
@@ -70,11 +71,8 @@ def train(sPathTrainParamYml):
 
         # ----- dump several image ----- #
         if nDump1st > 0: # save the first nSaveRemain train image
-            bgr888_noisy = dataset.ChHW4n_2_bgr888(BChHW_noisy[0], meta_datas[0])
-            cv2.imwrite(os.path.join(tpm.folderDump1stImg, f"{nDump1st}_Noisy.jpg"), bgr888_noisy)
-            bgr888_gt = dataset.ChHW4n_2_bgr888(BChHW_gt[0], meta_datas[0])
-            cv2.imwrite(os.path.join(tpm.folderDump1stImg, f"{nDump1st}_GT.jpg"), bgr888_gt)
-
+            DumpBgr888(dataset, BChHW_noisy, meta_datas, batch_idx, "Noisy", tpm.folderDump1stImg)
+            DumpBgr888(dataset, BChHW_gt, meta_datas, batch_idx, "GT", tpm.folderDump1stImg)
             nDump1st -= 1
 
 

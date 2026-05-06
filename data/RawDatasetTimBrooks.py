@@ -26,7 +26,7 @@ import math
 import time
 from utilBasic import print_gpu_memory_stats
 
-from RawDataset import RawDatasetBasic
+from data.RawDataset import RawDatasetBasic
 from AddNoise import add_noise_Concat
 
 class RawDatasetTimBrooks(RawDatasetBasic):
