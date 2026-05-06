@@ -29,8 +29,8 @@ class CropDatasetBasic(Dataset):
         assert Wbayer % 2 == 0
         self.Hbayer = Hbayer
         self.Wbayer = Wbayer
-        self.Hrggb = Hbayer // 2
-        self.Wrggb = Wbayer // 2
+        self.Hrggb = Hbayer * 2
+        self.Wrggb = Wbayer * 2
         self.device = device
 
         self.collectImgPath(lstImgPattern)
@@ -171,7 +171,10 @@ class CropDatasetJpg(CropDatasetBasic):
 
         if pad_h > 0 or pad_w > 0:
             img_nchw = bgr888.permute(2, 0, 1).unsqueeze(0)
-            padded_nchw = F.pad(img_nchw, (0, pad_w, 0, pad_h), mode='reflect')
+            if pad_h >= h or pad_w >= w:
+                padded_nchw = F.pad(img_nchw, (0, pad_w, 0, pad_h), mode='constant', value = 127)
+            else:
+                padded_nchw = F.pad(img_nchw, (0, pad_w, 0, pad_h), mode='reflect')
             bgr888 = padded_nchw.squeeze(0).permute(1, 2, 0)
 
         # ----- crop to network size ----- #
@@ -207,15 +210,15 @@ if __name__ == "__main__":
     device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
 
     # --------- test vrf ---------- #
-    dir_pattern = "D:/image_database/SID/SID/Sony/longVRFmini/*.vrf"
-    dataset = CropDatasetVrf(dir_pattern, Hbayer=1024, Wbayer=1024, device=device)
-    HWCh4n, meta_data = dataset[0]
-    bgr888 = dataset.HWCh4n_2_bgr888(HWCh4n, meta_data)
-    cv2.imwrite("test_CropDatasetVrf.jpg", bgr888)
+    # dir_pattern = "D:/image_database/SID/SID/Sony/longVRFmini/*.vrf"
+    # dataset = CropDatasetVrf(dir_pattern, Hbayer=1024, Wbayer=1024, device=device)
+    # HWCh4n, meta_data = dataset[0]
+    # bgr888 = dataset.HWCh4n_2_bgr888(HWCh4n, meta_data)
+    # cv2.imwrite("test_CropDatasetVrf.jpg", bgr888)
 
     # --------- test jpg ---------- #
-    # dir_pattern = "D:/image_database/mirflickr25k/mirflickr/*.jpg"
-    # dataset = CropDatasetJpg(dir_pattern, Hbayer=1024, Wbayer=1024, device=device)
-    # input_rggb, meta_data = dataset[1]
-    # bgr888 = dataset.HWCh4n_2_bgr888(input_rggb, meta_data, bCPU = True)
-    # cv2.imwrite("test_CropDatasetJpg.jpg", bgr888)
+    dir_pattern = "D:/image_database/mirflickr25k/mirflickr/*.jpg"
+    dataset = CropDatasetJpg(dir_pattern, Hbayer=256, Wbayer=256, device=device)
+    input_rggb, meta_data = dataset[1]
+    bgr888 = dataset.HWCh4n_2_bgr888(input_rggb, meta_data, bCPU = True)
+    cv2.imwrite("test_CropDatasetJpg.jpg", bgr888)
