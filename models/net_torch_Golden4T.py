@@ -6,7 +6,6 @@ if str(curFolder) not in sys.path:
     sys.path.append(str(curFolder))
 
 import utilModels
-from models.net_torch import NetworkBasic
 
 import numpy as np
 import torch
@@ -50,8 +49,8 @@ def downsample_2x(x):
     batch, _, h, w = x.shape
     pad_h = (2 - h % 2) % 2  # 1 if h is odd, else 0
     pad_w = (2 - w % 2) % 2
-    if pad_h or pad_w:
-        x = F.pad(x, (0, pad_w, 0, pad_h), mode='constant', value=0)
+    # if pad_h or pad_w:
+    #     x = F.pad(x, (0, pad_w, 0, pad_h), mode='constant', value=0)
     return F.max_pool2d(x, kernel_size=2, stride=2)
 
 
@@ -71,6 +70,9 @@ class Golden4T(nn.Module):
             ChOut = self.enc_channels[i+1]
             lstEncoder.append(ConvBlock(ChIn, ChOut))
         self.enc_blocks = nn.ModuleList(lstEncoder)
+
+        # ----- BottleNeck ---- #
+        self.bottleneck_conv = ConvBlock(256, 512)
 
         # ----- Decoder ----- #
         self.dec_channels_in = [512+256, 256+128, 128+64, 64+32]
@@ -94,7 +96,11 @@ class Golden4T(nn.Module):
             Denoised image of shape [B, 4, H, W]
         """
         # Ensure input shapes are compatible
-        assert noisy_img.shape == variance.shape, "noisy_img and variance must have same shape"
+        if self.training:
+            assert noisy_img.shape == variance.shape, "noisy_img and variance must have same shape"
+            dsRatio = pow(2, len(self.enc_channels[:-1]))
+            assert noisy_img.shape[2] % dsRatio == 0
+            assert noisy_img.shape[3] % dsRatio == 0
 
         # Concatenate along channel dimension -> [B, 8, H, W]
         features = torch.cat([noisy_img, variance], dim=1)
@@ -108,8 +114,8 @@ class Golden4T(nn.Module):
             skip_connections.append(features)
             features = downsample_2x(features)
 
-        bottleneck_conv = ConvBlock(256, 512).to(features.device)
-        features = bottleneck_conv(features)
+        # BottleNeck
+        features = self.bottleneck_conv(features)
 
         # Decoder
         for i, num_channels in enumerate(self.dec_channels_in):
@@ -118,10 +124,10 @@ class Golden4T(nn.Module):
             # Concatenate with the corresponding skip connection (pop from end)
             skip = skip_connections.pop()
             # Ensure spatial dimensions match (due to possible odd-size padding)
-            if features.shape[2:] != skip.shape[2:]:
+            # if features.shape[2:] != skip.shape[2:]:
                 # Align sizes: skip may be larger; interpolate features or crop skip?
                 # Usually they match due to same-padding pooling, but if not, interpolate features.
-                features = F.interpolate(features, size=skip.shape[2:], mode='bilinear', align_corners=False)
+                # features = F.interpolate(features, size=skip.shape[2:], mode='bilinear', align_corners=False)
             features = torch.cat([features, skip], dim=1)
             features = self.dec_blocks[i](features)
 
@@ -131,11 +137,43 @@ class Golden4T(nn.Module):
         return denoised
 
 if __name__ == "__main__":
-    net, img = Golden4T(), torch.randn(1, 4, 64, 64, device=torch.device('cpu'), dtype=torch.float32)
-    out = net(img, img)
+    # ---------- test 1: train mode run and cal GFLops ---------- #
+    # net, img = Golden4T(), torch.randn(1, 4, 512, 512, device=torch.device('cpu'), dtype=torch.float32)
+    # out = net(img, img)
 
-    # summary(net, input_size=(1, 8, 64, 64))
-    flops, params = profile(net, inputs=[img, img])
-    gflops = flops/1e9
-    imgSizeM = img.shape[1]*img.shape[2]*img.shape[3]/1e6
-    print(f"FLOPs: {gflops:.2f}G, Params: {params/1e6:.2f}M, gFlops per 1M pixel = {gflops/imgSizeM:.2f}G")
+    # flops, params = profile(net, inputs=[img, img])
+    # gflops = flops/1e9
+    # imgSizeM = img.shape[1]*img.shape[2]*img.shape[3]/1e6
+    # print(f"FLOPs: {gflops:.2f}G, Params: {params/1e6:.2f}M, gFlops per 1M pixel = {gflops/imgSizeM:.2f}G")
+
+    # ---------- test 2: eval mode and convert to onnx: !!! conflict with test 1  ---------- #
+    onnx_path = 'onnx/Golden4T_beforeTrain.onnx'
+    os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
+    input_shape = (1, 4, 512, 512)
+
+    # 1. load pytorch model
+    model = Golden4T()
+    # pth_path = 'models/torch_pretrained.ckp'
+    # model.load_state_dict(torch.load(pth_path))
+    model.eval()
+
+    # 2. create dummy input
+    dummy_input = torch.randn(input_shape)
+    dummy_variance = torch.randn(input_shape)
+
+    # 3. 导出为ONNX
+    torch.onnx.export(
+        model,
+        (dummy_input, dummy_variance),
+        onnx_path,
+        export_params=True,       # 是否导出模型参数
+        opset_version=11,         # ONNX算子集版本（推荐11+）
+        do_constant_folding=True, # 是否优化常量折叠
+        input_names=["input", "variance"],    # 输入节点名称
+        output_names=["output"],  # 输出节点名称
+        # dynamic_axes={
+        #     "input": {0: "batch_size"},  # 动态批次维度
+        #     "output": {0: "batch_size"}
+        # } if dynamic_batch else None
+    )
+    print(f"模型已成功导出至 {onnx_path}")
