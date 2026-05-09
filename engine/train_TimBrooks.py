@@ -1,3 +1,6 @@
+import os
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+
 import sys, os
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
@@ -17,8 +20,8 @@ from data.RawDatasetTimBrooks import RawDatasetTimBrooks, create_dataloader
 from benchmark import BenchmarkLoader
 # from run_benchmark import Denoiser, KSigma, Official_Ksigma_params
 
-# from models.net_torch import NetworkTimBrooks as Network
-from models.net_torch_Golden4T import Golden4T as Network
+from models.net_torch_noahtcv_group import NOAHTCVgroup, NOAHTCVgroup_Level3
+from models.net_torch_Golden4T import Golden4T
 
 import time
 import numpy as np
@@ -26,21 +29,32 @@ import numpy as np
 # import time
 # from tqdm import tqdm
 # from utils.loss import calc_psnr
+from learn_rate import lr_triangle
 
-seed = 39
-torch.manual_seed(seed)
+seed = 37
+import random
+random.seed(seed)
 np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False   # 关闭自动调优
 
-def train(sPathTrainParamYml):
+def train(sModelName, sPathTrainParamYml, Network):
     tpm = TrainParam(sPathTrainParamYml) # TrainParaM
 
     model = Network().to(tpm.device)
-    optimizer = optim.Adam(model.parameters(), lr=tpm.lr)
+    optimizer = optim.Adam(model.parameters(), lr=tpm.lr, weight_decay=1e-5)
     criterion = torch.nn.L1Loss()
 
-    from ImgDataset import CropDatasetJpg
+    if "jpg" in tpm.train_pattern[0]:
+        from ImgDataset import CropDatasetJpg as CropDataset
+    elif "vrf" in tpm.train_pattern[0]:
+        from ImgDataset import CropDatasetVrf as CropDataset
+    else:
+        assert False
     dataset = RawDatasetTimBrooks(
-        tpm.train_pattern, tpm.image_size, tpm.image_size, device=tpm.device, CropDataset=CropDatasetJpg)
+        tpm.train_pattern, tpm.image_size, tpm.image_size, device=tpm.device, CropDataset=CropDataset)
     train_loader = create_dataloader(dataset, tpm.batch_size)
 
     # ----- Log and Dump stuff ----- #
@@ -51,41 +65,73 @@ def train(sPathTrainParamYml):
     step = 0
     nDump1st = 20 
     # ---------- start training ---------- #
-    for batch_idx, (BChHW_gt, BChHW_noisy, BChHW_var, meta_datas) in enumerate(train_loader):
-        # ----- exit mechanism ----- #
-        step = batch_idx // tpm.batch_per_step
-        if step >= tpm.num_step:
-            break
-        # ----- train ----- #
-        optimizer.zero_grad()
-        BChHW_denoise = model(BChHW_noisy, BChHW_var)
+    model.train()
+    batch_idx_total = 0
+    while True:
+        for batch_idx, (BChHW_gt, BChHW_noisy, BChHW_var, meta_datas) in enumerate(train_loader):
+            # ----- exit mechanism ----- #
+            step = batch_idx_total // tpm.batch_per_step
+            if step >= tpm.num_step:
+                break
 
-        train_loss = criterion(BChHW_denoise, BChHW_gt)
-        train_loss.backward()
-        optimizer.step()
+            # ----- adjust lr ---- #
+            current_lr = lr_triangle(step, epochMax = tpm.num_step, lrMax = tpm.lr)
+            # current_lr = tpm.lr
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = current_lr
 
-        # ----- log ----- #
-        if batch_idx % (tpm.batch_per_step*tpm.train_loss_per_step) == 0:
-            print("batch_idx=", batch_idx, ", step=", step, ", loss=", train_loss.item())
-            writer.add_scalar('train_loss', train_loss.item(), step)
+            # ----- train ----- #
+            optimizer.zero_grad()
+            BChHW_pred = model(BChHW_noisy, BChHW_var)
+            train_loss = criterion(BChHW_pred, BChHW_gt)
+            train_loss.backward()
+            optimizer.step()
 
-        # ----- dump several image ----- #
-        if nDump1st > 0: # save the first nSaveRemain train image
-            DumpBgr888(dataset, BChHW_noisy, meta_datas, batch_idx, "Noisy", tpm.folderDump1stImg)
-            DumpBgr888(dataset, BChHW_gt, meta_datas, batch_idx, "GT", tpm.folderDump1stImg)
-            nDump1st -= 1
+            # ----- log ----- #
+            if batch_idx % (tpm.batch_per_step*tpm.cal_train_loss_per_step) == 0:
+                print("batch_idx=", batch_idx, ", step=", step, ", loss=", train_loss.item())
+                writer.add_scalar('train_loss', train_loss.item(), step)
+                writer.add_scalar('lr', current_lr, step)
+                DumpBgr888(dataset, BChHW_noisy[0], meta_datas[0], batch_idx, "Noisy0", tpm.folderDumpPred)
+                DumpBgr888(dataset, BChHW_gt[0], meta_datas[0], batch_idx, "GT0", tpm.folderDumpPred)
+                DumpBgr888(dataset, BChHW_pred[0], meta_datas[0], batch_idx, "Pred0", tpm.folderDumpPred)
 
+                loss_train = train_loss.item()
+                eval_train = 1.0
+                sModelDump = os.path.join(tpm.folderDumpCkpt, f"{step:06d}_L{loss_train:.4f}.ckpt")
+                torch.save({
+                    'sModelName':sModelName,
+                    'step':step,
+                    'lr':current_lr,
+                    'state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss_train':loss_train,
+                    'eval_train':eval_train
+                    }, sModelDump)
+
+            # ----- dump several image ----- #
+            if nDump1st > 0: # save the first nSaveRemain train image
+                DumpBgr888(dataset, BChHW_noisy[0], meta_datas[0], batch_idx, "Noisy0", tpm.folderDump1stImg)
+                DumpBgr888(dataset, BChHW_gt[0], meta_datas[0], batch_idx, "GT0", tpm.folderDump1stImg)
+                DumpBgr888(dataset, BChHW_pred[0], meta_datas[0], batch_idx, "Pred0", tpm.folderDump1stImg)
+                nDump1st -= 1
+
+            batch_idx_total += tpm.batch_size
 
 if __name__ == '__main__':
-    sPathTrainParamYml = r"D:\users\xiaoyaopan\PxyAI\PMRID_OFFICIAL\PMRID\runs\models\golden_4Tpxy\TrainArg.yaml"
-    train(sPathTrainParamYml)
+    sTrainFolder = "D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/runs/models"
+
+    # sModelName, sTrainParamYml, Network = "Golden4T", "TrainArg.yaml", Golden4T
+    sModelName, sTrainParamYml, Network = "NOAHgroupLevel3", "TrainArg.yaml", NOAHTCVgroup_Level3
+
+    sPathTrainParamYml = os.path.join(sTrainFolder, sModelName, sTrainParamYml)
+    train(sModelName, sPathTrainParamYml, Network)
 
     # # ----- using BenchMark as test load ----- #
     # # test_loader = create_dataloader(args.test_pattern, args.image_size, args.image_size, args.batch_size)
     # import pathlib as Path
     # pathBenchMarkJson = Path.Path("D:/users/xiaoyaopan/PxyAI/DataSet/PMRID/PMRID/benchmark.json")
     # bm_loader = BenchmarkLoader(pathBenchMarkJson.resolve())
-
     
     # # Track top 10 models by PSNR
     # lst_top_models = defaultdict(list)
