@@ -87,14 +87,16 @@ def train(sModelName, sPathTrainParamYml, Network):
             train_loss.backward()
             optimizer.step()
 
+            if batch_idx_total % 10 == 0:
+                print("batch_idx_total=", batch_idx_total, ", step=", step, ", loss=", train_loss.item())
             # ----- log ----- #
-            if batch_idx % (tpm.batch_per_step*tpm.cal_train_loss_per_step) == 0:
-                print("batch_idx=", batch_idx, ", step=", step, ", loss=", train_loss.item())
+            if batch_idx_total % (tpm.batch_per_step*tpm.cal_train_loss_per_step) == 0:
+                print("  dump  ")
                 writer.add_scalar('train_loss', train_loss.item(), step)
                 writer.add_scalar('lr', current_lr, step)
-                DumpBgr888(dataset, BChHW_noisy[0], meta_datas[0], batch_idx, "Noisy0", tpm.folderDumpPred)
-                DumpBgr888(dataset, BChHW_gt[0], meta_datas[0], batch_idx, "GT0", tpm.folderDumpPred)
-                DumpBgr888(dataset, BChHW_pred[0], meta_datas[0], batch_idx, "Pred0", tpm.folderDumpPred)
+                DumpBgr888(dataset, BChHW_noisy[0], meta_datas[0], step, "Noisy0", tpm.folderDumpPred)
+                DumpBgr888(dataset, BChHW_gt[0], meta_datas[0], step, "GT0", tpm.folderDumpPred)
+                DumpBgr888(dataset, BChHW_pred[0], meta_datas[0], step, "Pred0", tpm.folderDumpPred)
 
                 loss_train = train_loss.item()
                 eval_train = 1.0
@@ -116,7 +118,7 @@ def train(sModelName, sPathTrainParamYml, Network):
                 DumpBgr888(dataset, BChHW_pred[0], meta_datas[0], batch_idx, "Pred0", tpm.folderDump1stImg)
                 nDump1st -= 1
 
-            batch_idx_total += tpm.batch_size
+            batch_idx_total += 1
 
 if __name__ == '__main__':
     sTrainFolder = "D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/runs/models"
