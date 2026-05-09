@@ -29,12 +29,12 @@ class TrainParam:
         self.lr = float(config_yaml['lr'])
         self.img_per_step = int(config_yaml['img_per_step'])
         assert self.img_per_step > self.batch_size
-        assert self.img_per_step % self.batch_size == 0
+        assert self.img_per_step % self.batch_size == 0, f"img_per_step={self.img_per_step}, batch_size={self.batch_size}"
         self.batch_per_step = self.img_per_step // self.batch_size
         self.num_step = int(config_yaml['num_step'])
 
-        self.train_loss_per_step = int(config_yaml['train_loss_per_step'])
-        self.eval_epoch = int(config_yaml['eval_epoch'])
+        self.cal_train_loss_per_step = int(config_yaml['cal_train_loss_per_step']) # means write train loss and train img
+        self.cal_eval_loss_per_step = int(config_yaml['cal_eval_loss_per_step']) # means dump ckpt and eval img
         self.resume = bool(config_yaml['resume'])
         self.device = config_yaml['device']
 
@@ -44,6 +44,9 @@ class TrainParam:
         os.makedirs(self.folderDump1stImg, exist_ok=True)
         self.folderDumpPred = os.path.join(self.output_dir, "DumpPred")
         os.makedirs(self.folderDumpPred, exist_ok=True)
+
+        self.folderDumpCkpt = os.path.join(self.output_dir, "DumpCkpt")
+        os.makedirs(self.folderDumpCkpt, exist_ok=True)
 
 # def find_best_model(model_dir):
 #     if not os.path.exists(model_dir):
