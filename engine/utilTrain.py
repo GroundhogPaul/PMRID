@@ -37,6 +37,7 @@ class TrainParam:
         self.cal_train_loss_per_step = int(config_yaml['cal_train_loss_per_step']) # means write train loss and train img
         self.cal_eval_loss_per_step = int(config_yaml['cal_eval_loss_per_step']) # means dump ckpt and eval img
         self.resume = bool(config_yaml['resume'])
+        self.resume_Mode = config_yaml['resume_mode']
         self.device = config_yaml['device']
 
         self.folderDumpLog = os.path.join(self.output_dir, "DumpLog")
@@ -60,15 +61,16 @@ class TrainState:
 
         self.lr = -1 # current lr
         self.step = 0
-        self.batch_total = 0
+        self.batch_idx_total = 0
         self.train_loss = torch.tensor(-1)
         self.eval_loss = torch.tensor(-1)
 
         from torch.utils.tensorboard import SummaryWriter
         self.writer = SummaryWriter(self.tpm.folderDumpLog)
     
-    def printStatus(self):
-        print(f"batch_total={self.batch_total}, step={self.step}, loss={self.train_loss.item():.4f}")
+    def printStatus(self, interval=10):
+        if self.batch_idx_total % interval == 0:
+            print(f"batch_idx_total={self.batch_idx_total}, step={self.step}, loss={self.train_loss.item():.4f}")
     
     def LogStatus(self):
         self.writer.add_scalar('train_loss', self.train_loss.item(), self.step)
@@ -80,100 +82,63 @@ class TrainState:
         sModelDump = os.path.join(folderDumpCkpt, f"{self.step:06d}_L{self.train_loss.item():.4f}.ckpt")
         torch.save({
             'sModelName': self.sModelName,
-            'step': self.step,
-            'batch_total': self.batch_total,
-            'lr': self.lr,
             'state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'loss_train':self.train_loss,
-            'eval_train':self.train_loss
+
+            'lr': self.lr,
+            'step': self.step,
+            'batch_idx_total': self.batch_idx_total,
+            'train_loss':self.train_loss,
+            'eval_loss':self.eval_loss
             }, sModelDump)
     
-    def LoadModel(self, folderDumpCkpt):
-        assert os.path.exists(folderDumpCkpt)
-        ckpt = torch.load(best_model_path, weights_only=False)
+    def LoadModel(self):
+        if not self.tpm.resume:
+            print("resume mode off, training a new model from step:0")
+            return
+
+        assert self.tpm.resume_Mode == "Latest" or self.tpm.resume_Mode == "BestTrain" or self.tpm.resume_Mode == "BestEval"
+        assert os.path.exists(self.tpm.folderDumpCkpt)
+        path_ckpt = self._SelectBestModel(self.tpm.resume_Mode)
+        if path_ckpt is None:
+            print(f"!!! no checkpoint found in {self.tpm.folderDumpCkpt}, training a new model from step:0")
+            return path_ckpt
+
+        ckpt = torch.load(path_ckpt, weights_only=False)
         self.model.load_state_dict(ckpt['state_dict'])
         self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+
+        self.lr = ckpt['lr']
         self.step = ckpt['step']
-        self.batch_total = ckpt['batch_total']
-#         print(f"resume from epoch:{start_epoch}, best PSNR: {best_psnr:.2f}")
-        print("done")
+        self.batch_idx_total = ckpt['batch_idx_total']
+        self.train_loss = ckpt['train_loss']
+        self.eval_loss = ckpt['eval_loss']
+
+        print(f"resume from step:{self.step}, batch: {self.batch_idx_total}")
     
-    def _SelectBestModel():
-        pass
+    def _SelectBestModel(self, sMode:str):
+        assert sMode == "Latest" or sMode == "BestTrain" or sMode == "BestEval"
+        import glob
+        checkpoint_files = glob.glob(os.path.join(self.tpm.folderDumpCkpt, '*.ckpt'))
+        if not checkpoint_files:
+            return None
+        
+        scoreBest = float('inf')
+        best_ckpt = None
+        for f in checkpoint_files:
+            ckpt = torch.load(f, weights_only=False)
+            if sMode == "Latest":
+                score = -ckpt['step'] # the smaller step, the newer the model
+            elif sMode == "BestTrain":
+                score = ckpt['train_loss'].item()
+            elif sMode == "BestEval":
+                score = ckpt['eval_loss'].item()
+            
+            if score < scoreBest:
+                scoreBest = score
+                best_ckpt = f
 
-# def find_best_model(model_dir):
-#     if not os.path.exists(model_dir):
-#         return None, -1
-    
-#     checkpoint_files = glob.glob(os.path.join(model_dir, 'top_models', 'top_model_psnr_*_epoch_*.pth'))
-#     if not checkpoint_files:
-#         return None, -1
+        return best_ckpt
 
-#     psnr_values = []
-#     for f in checkpoint_files:
-#         try:
-#             psnr = float(os.path.basename(f).split('_')[3])
-#             psnr_values.append(psnr)
-#         except:
-#             continue
-
-#     best_idx = np.argmax(psnr_values)
-#     return  checkpoint_files[best_idx], psnr_values[best_idx]
-
-
-# # load checkpoint
-# if args.resume:
-#     best_model_path, best_psnr = find_best_model(args.model_dir)
-#     if best_model_path:
-#         print(f"find best checkpoint: {best_model_path} (PSNR: {best_psnr:.2f})")
-
-#         checkpoint = torch.load(best_model_path, weights_only=False)
-#         model.load_state_dict(checkpoint['state_dict'])
-#         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-#         start_epoch = checkpoint['epoch']
-#         best_psnr = checkpoint['psnr']
-#         print(f"resume from epoch:{start_epoch}, best PSNR: {best_psnr:.2f}")
-#     else:
-#         start_epoch = 0
-#         print(f'not finding saved checkpoint, training a new model from epoch:0')  
-#         args.resume = False
-# else:
-#     start_epoch = 0
-#     print(f'training a new model from epoch:0')
-
-# def save_checkpoint(lst_top_models, lst_lateset_models, model, optimizer, epoch, psnr, model_dir):
-#     os.makedirs(model_dir, exist_ok=True)
-#     nKeepTop = 10
-#     nKeepLatest = 100
-    
-#     # ---------- top models ---------- #
-#     if len(lst_top_models) < nKeepTop or psnr > min(lst_top_models.keys()):
-#         # Remove the worst model if we already have 10
-#         if len(lst_top_models) >= nKeepTop:
-#             worst_psnr = min(lst_top_models.keys())
-#             os.remove(lst_top_models[worst_psnr][0])
-#             del lst_top_models[worst_psnr]        
-
-#         top_model_path = os.path.join(model_dir, 'top_models', f'top_model_psnr_{psnr:.2f}_epoch_{epoch}.pth')
-#         torch.save({
-#             'epoch':epoch,
-#             'state_dict': model.state_dict(),
-#             'optimizer_state_dict': optimizer.state_dict(),
-#             'psnr':psnr}, 
-#             top_model_path)
-#         lst_top_models[psnr] = (top_model_path, epoch)
-
-#     # ---------- lateset models ---------- #
-#     lateset_model_path = os.path.join(model_dir, 'top_models', f'lateset_model_psnr_{psnr:.2f}_epoch_{epoch}.pth')
-#     torch.save({
-#         'epoch':epoch,
-#         'state_dict': model.state_dict(),
-#         'optimizer_state_dict': optimizer.state_dict(),
-#         'psnr':psnr}, 
-#         lateset_model_path)
-#     lst_lateset_models[epoch] = lateset_model_path
-#     if len(lst_lateset_models) > nKeepLatest:
-#         oldest_epoch = min(lst_lateset_models.keys())
-#         os.remove(lst_lateset_models[oldest_epoch])
-#         del lst_lateset_models[oldest_epoch]        
+    def nextBatch(self):
+        self.batch_idx_total += 1
