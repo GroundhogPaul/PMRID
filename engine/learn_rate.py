@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-def lr_triangle(epoch, epochMax):
+def lr_triangle(epoch, epochMax, lrMax = 1e-3, lrMin = 1e-5):
     assert epoch >= 0
     assert epoch < epochMax
 
