@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
 import utilBasic
 
 import numpy as np
+import torch
 import yaml
 
 class TrainParam:
@@ -47,6 +48,59 @@ class TrainParam:
 
         self.folderDumpCkpt = os.path.join(self.output_dir, "DumpCkpt")
         os.makedirs(self.folderDumpCkpt, exist_ok=True)
+
+class TrainState:
+    def __init__(self, sModelName, tpm:TrainParam):
+        assert isinstance(sModelName, str)
+        assert isinstance(tpm, TrainParam)
+        self.tpm = tpm
+        self.sModelName = sModelName
+        self.model = None
+        self.optimizer = None
+
+        self.lr = -1 # current lr
+        self.step = 0
+        self.batch_total = 0
+        self.train_loss = torch.tensor(-1)
+        self.eval_loss = torch.tensor(-1)
+
+        from torch.utils.tensorboard import SummaryWriter
+        self.writer = SummaryWriter(self.tpm.folderDumpLog)
+    
+    def printStatus(self):
+        print(f"batch_total={self.batch_total}, step={self.step}, loss={self.train_loss.item():.4f}")
+    
+    def LogStatus(self):
+        self.writer.add_scalar('train_loss', self.train_loss.item(), self.step)
+        self.writer.add_scalar('lr', self.lr, self.step)
+    
+    def SaveModel(self, folderDumpCkpt):
+        print("  dump  ")
+        # eval_train = self.eval_loss.item()
+        sModelDump = os.path.join(folderDumpCkpt, f"{self.step:06d}_L{self.train_loss.item():.4f}.ckpt")
+        torch.save({
+            'sModelName': self.sModelName,
+            'step': self.step,
+            'batch_total': self.batch_total,
+            'lr': self.lr,
+            'state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'loss_train':self.train_loss,
+            'eval_train':self.train_loss
+            }, sModelDump)
+    
+    def LoadModel(self, folderDumpCkpt):
+        assert os.path.exists(folderDumpCkpt)
+        ckpt = torch.load(best_model_path, weights_only=False)
+        self.model.load_state_dict(ckpt['state_dict'])
+        self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        self.step = ckpt['step']
+        self.batch_total = ckpt['batch_total']
+#         print(f"resume from epoch:{start_epoch}, best PSNR: {best_psnr:.2f}")
+        print("done")
+    
+    def _SelectBestModel():
+        pass
 
 # def find_best_model(model_dir):
 #     if not os.path.exists(model_dir):

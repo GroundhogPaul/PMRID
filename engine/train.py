@@ -34,14 +34,15 @@ from learn_rate import lr_triangle
 def train():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_dir', 
-                        default='runs/models/Huan2.4G_fiveK',
+                        default='runs/models/Huan2.4G_fiveK_subset230_correct_color',
                         help='Location at which to save model logs and checkpoints.'
                         )
     parser.add_argument('--train_pattern', 
                         # default=['D:/image_database/SID/SID/Sony/longVRF/*.vrf'],
                         # default=['D:/image_database/fivek_dataset/fivek_dataset/raw_photos/vrf/*.vrf', 
                         #          'D:/image_database/SID/SID/Sony/longVRF/*.vrf'],
-                        default=['D:/image_database/fivek_dataset/fivek_dataset/raw_photos/vrf/*.vrf'],
+                        # default=['D:/image_database/fivek_dataset/fivek_dataset/raw_photos/vrf/*.vrf'],
+                        default=['D:/image_database/fivek_dataset/fivek_dataset/raw_photos/vrf_subset_rightColor/*.vrf'],
                         help='Pattern for directory containing source JPG images for training.'
                         )
     parser.add_argument('--test_pattern', 
@@ -49,18 +50,18 @@ def train():
                         help='Pattern for directory containing source JPG images for testing.'                   
                         )
     parser.add_argument('--image_size', type=int, default=1024)
-    parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--learning_rate', type=float, default=5e-4)
-    parser.add_argument('--num_epochs', type=float, default=500)
-    parser.add_argument('--train_loss_log_step', type=int, default=300, help='Log train loss every N steps, step = batch') # 1000
-    parser.add_argument('--eval_step', type=int, default=300, help='Log images to TensorBoard every N steps, step = batch') # 5000
+    parser.add_argument('--num_epochs', type=float, default=8000)
+    parser.add_argument('--train_loss_log_step', type=int, default=230/8*400, help='Log train loss every N steps, step = batch') # 1000
+    parser.add_argument('--eval_step', type=int, default=230/8*400, help='Log images to TensorBoard every N steps, step = batch') # 5000
     parser.add_argument('--resume', default=True, help='Whether to resume training')
 
     args = parser.parse_args()
 
     # visible_device_list代码端配置  2 3 1 0    <->    window任务管理器  GPU0 GPU1 GPU2 GPU3
     torch.cuda.empty_cache()
-    device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
 
     model_netK = Network_Level3_ch_off_bilinear(mode='KSigma').to(device)
     optimizer_netK = optim.Adam(model_netK.parameters(), lr=args.learning_rate)
@@ -109,7 +110,7 @@ def train():
         print(f'training a new model from step:0')
 
 
-    dataset = PMRIDRawDataset(args.train_pattern, args.image_size, args.image_size, bPreLoadAll=False, device = device)
+    dataset = PMRIDRawDataset(args.train_pattern, args.image_size, args.image_size, bPreLoadAll=True, device = device)
     train_loader = create_dataloader(dataset, args.batch_size, num_workers=0)
     # test_loader = create_dataloader(args.test_pattern, args.image_size, args.image_size, args.batch_size)
     import pathlib as Path
@@ -135,7 +136,7 @@ def train():
 
     nSaveTestCnt = 20
     step = start_step
-    stepMax = 558300
+    # stepMax = 558300
     # ---------- start training ---------- #
     for epoch in range(start_epoch, args.num_epochs): 
         model_netK.train()
@@ -145,7 +146,9 @@ def train():
         start_time_batch = time.time() 
         for batch_idx, (inputs_rggb_gt, inputs_rggb_noisy, inputs_rggb_noisy_k, inputs_rggb_variance, meta_data) in enumerate(train_loader):
             # ----- adjust lr ---- #
-            current_lr = lr_triangle(step, stepMax)
+            # current_lr = lr_triangle(step, stepMax)
+            current_lr = 5e-4
+
             for param_group in optimizer_netK.param_groups:
                 param_group['lr'] = current_lr
             for param_group in optimizer_netC.param_groups:
