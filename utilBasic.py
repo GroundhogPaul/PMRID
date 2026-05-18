@@ -1,12 +1,12 @@
 import sys
 import os
 
-sPathFolderUtilVrf = "D:/users/xiaoyaopan/PxyAI/DataSet/Vrf"
-assert os.path.exists(sPathFolderUtilVrf), f"Folder does not exist: {sPathFolderUtilVrf}"
-sys.path.append(sPathFolderUtilVrf)
-import utilVrf
-import utilDng
-import utilRaw
+sFrameBasic = "D:/users/xiaoyaopan/PxyAI/FrameBasic/FrameBasicPython"
+assert os.path.exists(sFrameBasic), f"Folder does not exist: {sFrameBasic}"
+sys.path.append(sFrameBasic)
+from RawContainer import utilVrf
+from RawContainer import utilDng
+from RawContainer import utilRaw
 
 import torch
 
