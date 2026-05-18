@@ -18,6 +18,7 @@ def add_noise_Concat(ChHW_01):
 
     # ----- Case 1: Tim Brooks paper ----- #
     log_min_shot_noise = torch.log(torch.tensor(0.0001))
+    # log_min_shot_noise = torch.log(torch.tensor(0.012)) # debug code
     log_max_shot_noise = torch.log(torch.tensor(0.012))
     log_shot_noise =  log_min_shot_noise + (log_max_shot_noise - log_min_shot_noise) * torch.rand(1)
     shot_noise = torch.exp(log_shot_noise).item()
@@ -98,9 +99,12 @@ if __name__ == "__main__":
 
     # --------- test jpg ---------- #
     dir_pattern = "D:/image_database/mirflickr25k/mirflickr/*.jpg"
-    dataset = CropDatasetJpg(dir_pattern, Hbayer=1024, Wbayer=1024, device=device)
-    input_rggb, meta_data = dataset[1]
-    noisy_rggb, shot_noise, read_noise = add_noise_Concat(input_rggb)
+    dataset = CropDatasetJpg(dir_pattern, Hbayer=256, Wbayer=256, device=device)
+    input_HWCh4n, meta_data = dataset[1]
+    input_ChHW4n = input_HWCh4n.permute(2, 0, 1)  # [C,H,W]
 
-    bgr888 = dataset.rggb01_2_bgr888(noisy_rggb, meta_data, bCPU = True)
+    noisy_ChHW4n, var_ChHW4n = add_noise_Concat(input_ChHW4n)
+    noisy_HWCh4n = noisy_ChHW4n.permute(1, 2, 0)  # [H,W,C]
+
+    bgr888 = dataset.HWCh4n_2_bgr888(noisy_HWCh4n, meta_data, bCPU = True)
     cv2.imwrite("test_AddNoiseConcat.jpg", bgr888)

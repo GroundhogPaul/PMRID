@@ -12,6 +12,7 @@ from RawContainer.utilRaw import RawUtils
 from RawContainer.utilVrf import vrf, CFAPatternEnum, CFAPatternEnum
 from torch.utils.data import Dataset
 import torch.nn.functional as F
+import torchvision.transforms as tvtransforms
 
 import cv2
 
@@ -135,9 +136,11 @@ class CropDatasetVrf(CropDatasetBasic):
             'ccm3x3': ccm3x3
         }
 
-        HWCh4 = RawUtils.bayer_to_rggb(bayer_crop_RGGB, "RGGB")  # to [H/2, W/2, 4] RGGB
-        HWCh4n = (HWCh4.float() - black_level) / white_level  # to [0, 1]
+        # brightness and contrast augmentation
+        bayer_crop_RGGB = torch.clamp(bayer_crop_RGGB - black_level, 0, white_level - black_level) / (white_level - black_level) # to [0, 1] and remove blc
+        bayer_crop_RGGB = tvtransforms.ColorJitter(brightness=(0.2, 1.2), contrast=(0.5, 1.5))(bayer_crop_RGGB) # ideal image with augmentation
 
+        HWCh4n = RawUtils.bayer_to_rggb(bayer_crop_RGGB, "RGGB")  # to [H/2, W/2, 4] RGGB
         HWCh4n = torch.clamp(HWCh4n, 0, 1)
 
         return HWCh4n, meta_data
