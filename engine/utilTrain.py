@@ -7,6 +7,9 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 import utilBasic
+from RawContainer.utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image, CFAPatternEnum, FlipBayerPattern2Pattern
+from RawContainer.utilRaw import RawUtils
+from SensorNoise.UtilSensorNoise import interpolate_gain_var_folder
 
 import numpy as np
 import torch
@@ -51,12 +54,18 @@ class TrainParam:
         os.makedirs(self.folderDumpCkpt, exist_ok=True)
 
 class TrainState:
-    def __init__(self, sModelName, tpm:TrainParam):
+    def __init__(self, sModelName, model, tpm:TrainParam):
         assert isinstance(sModelName, str)
-        assert isinstance(tpm, TrainParam)
+        self.eval = True
+        if tpm is None:
+            self.eval = False 
+            print(" !!! input train param is None, eval mode !!!")
+        # assert isinstance(tpm, TrainParam)
         self.tpm = tpm
         self.sModelName = sModelName
-        self.model = None
+        self.model = model()
+        if self.eval:
+            self.model.to(tpm.device)
         self.optimizer = None
 
         self.lr = -1 # current lr
@@ -66,7 +75,8 @@ class TrainState:
         self.eval_loss = torch.tensor(-1)
 
         from torch.utils.tensorboard import SummaryWriter
-        self.writer = SummaryWriter(self.tpm.folderDumpLog)
+        if self.eval:
+            self.writer = SummaryWriter(self.tpm.folderDumpLog)
     
     def printStatus(self, interval=10):
         if self.batch_idx_total % interval == 0:
@@ -104,9 +114,15 @@ class TrainState:
             print(f"!!! no checkpoint found in {self.tpm.folderDumpCkpt}, training a new model from step:0")
             return path_ckpt
 
+        self.LoadModelFromPath(path_ckpt, self.tpm.device)
+        return path_ckpt
+    
+    def LoadModelFromPath(self, path_ckpt, device):
+        assert os.path.exists(path_ckpt), f"Model file does not exist: {path_ckpt}"
         ckpt = torch.load(path_ckpt, weights_only=False)
-        self.model.load_state_dict(ckpt['state_dict'])
-        self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        self.model.load_CKPT(sCKPT = path_ckpt, device=device)
+        if self.eval:
+            self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
 
         self.lr = ckpt['lr']
         self.step = ckpt['step']
@@ -114,7 +130,8 @@ class TrainState:
         self.train_loss = ckpt['train_loss']
         self.eval_loss = ckpt['eval_loss']
 
-        print(f"resume from step:{self.step}, batch: {self.batch_idx_total}")
+        print(f"load model from {path_ckpt}, step:{self.step}, batch: {self.batch_idx_total}")
+        print("current model name: ", self.sModelName, ", loaded model name: ", ckpt['sModelName'])
     
     def _SelectBestModel(self, sMode:str):
         assert sMode == "Latest" or sMode == "BestTrain" or sMode == "BestEval"
@@ -142,3 +159,71 @@ class TrainState:
 
     def nextBatch(self):
         self.batch_idx_total += 1
+
+# ---------- Denoise ---------- #
+def DenoiserConcat(noisy_bayerRGGB, net, SensorGain, sFolderNoiseParam):
+    assert isinstance(noisy_bayerRGGB, torch.Tensor), f"Input must be a pytorch tensor, current type: {type(noisy_bayerRGGB)}"
+
+    # ----- padd to 32 multiple ----- #
+    noisy_rggb = RawUtils.bayer2rggb(noisy_bayerRGGB)
+    noisy_rggb = noisy_rggb.permute(2, 0, 1).unsqueeze(0)  # [1,4,H,W]
+
+    B, C, H, W = noisy_rggb.shape
+    pad_h = (32 - H % 32) % 32
+    pad_w = (32 - W % 32) % 32
+    noisy_rggb = torch.nn.functional.pad(noisy_rggb, (0, pad_w, 0, pad_h), mode='constant', value = 0)
+
+    # ----- Get Sigma: LW method ----- #
+    varRead, stdShot = interpolate_gain_var_folder(sFolderNoiseParam, SensorGain)
+
+    # ----- cal var and concat ----- #
+    print("stdShot = ", stdShot, ", varRead = ", varRead)
+    noisy_rggb = torch.clamp(noisy_rggb, 0, 1)
+    var_rggb = torch.sqrt(noisy_rggb * stdShot + varRead).to(torch.float32)
+
+    # --------- forward --------- #
+    pred_rggb = net(noisy_rggb, var_rggb)[0].detach()  # [B,4,H,W]
+    pred_rggb = torch.clamp(pred_rggb, 0, 1)
+    # print(torch.min(noisy_rggb), torch.max(noisy_rggb), torch.mean(noisy_rggb))
+    # print(torch.min(pred_rggb), torch.max(pred_rggb), torch.mean(pred_rggb))
+
+    # ----- depad ----- #
+    pred_rggb = pred_rggb[:, :H, :W]
+    pred_bayerRGGB = RawUtils.rggb2bayer(pred_rggb.permute(1, 2, 0)).detach().cpu().numpy()
+
+    return pred_bayerRGGB
+
+def DenoiserVrf(sVrfPath, sVrfOutPath, sFolderNoiseParam, model, mode):
+    assert mode == "Concat" or mode == "KSigma", f"Unsupported mode: {mode}. Supported modes are 'Concat' and 'KSigma'."
+    # ----- read vrf info ----- #
+    vrfCur = vrf(sVrfPath)
+    ISO = vrfCur.m_ISO
+    SensorGain = vrfCur.m_nSensorGain
+    print(f"Using ISO: {ISO}, SensorGain: {SensorGain}")
+
+    black_level = vrfCur.m_BlackLevel
+    white_level = vrfCur.m_WhiteLevel 
+    blc01 = float(black_level) / white_level
+    dgain = 1.0
+
+    # ----- read vrf ----- #
+    # bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level)
+    noisy_bayerGRBG = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level, bClipBlc=True)
+    noisy_bayerRGGB = np.fliplr(noisy_bayerGRBG)
+    device = next(model.parameters()).device
+    noisy_bayerRGGB = torch.from_numpy(np.ascontiguousarray(noisy_bayerRGGB)).to(device)
+    if mode == "Concat":
+        pred_bayerRGGB = DenoiserConcat(noisy_bayerRGGB, model, SensorGain, sFolderNoiseParam)
+    if mode == "KSigma":
+        pred_bayerRGGB = DenoiserKSigma(noisy_bayerRGGB, model, SensorGain, sFolderNoiseParam)
+
+    # # ----- save vrf ----- #
+    out_ratio = 4  #out 12bit
+    out_black_level = black_level * out_ratio  # 根据实际情况调整
+    out_white_level = (white_level + 1) * out_ratio - 1
+    pred_bayerGRBG = np.fliplr(pred_bayerRGGB)
+    # bayer01_GRBG_denoise = np.clip(bayer01_GRBG_denoise, 0, 1)
+    denoised_image = save_raw_image(pred_bayerGRBG, sVrfOutPath.replace(".vrf", ".raw"), out_white_level, out_black_level)
+    save_vrf_image(denoised_image, sVrfPath, sVrfOutPath, out_white_level)
+
+    return
