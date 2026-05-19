@@ -57,15 +57,16 @@ class TrainState:
     def __init__(self, sModelName, model, tpm:TrainParam):
         assert isinstance(sModelName, str)
         self.eval = True
-        if tpm is None:
+        if tpm is not None:
+            assert isinstance(tpm, TrainParam)
             self.eval = False 
+        else:
             print(" !!! input train param is None, eval mode !!!")
-        # assert isinstance(tpm, TrainParam)
+
         self.tpm = tpm
         self.sModelName = sModelName
         self.model = model()
-        if self.eval:
-            self.model.to(tpm.device)
+        self.model.to(tpm.device)
         self.optimizer = None
 
         self.lr = -1 # current lr
@@ -75,7 +76,7 @@ class TrainState:
         self.eval_loss = torch.tensor(-1)
 
         from torch.utils.tensorboard import SummaryWriter
-        if self.eval:
+        if self.eval == False: # only write train tqdm for train mode, not eval mode
             self.writer = SummaryWriter(self.tpm.folderDumpLog)
     
     def printStatus(self, interval=10):
@@ -101,6 +102,8 @@ class TrainState:
             'train_loss':self.train_loss,
             'eval_loss':self.eval_loss
             }, sModelDump)
+        if self.eval == False: # only write train tqdm for train mode, not eval mode
+            self.LogStatus()
     
     def LoadModel(self):
         if not self.tpm.resume:
