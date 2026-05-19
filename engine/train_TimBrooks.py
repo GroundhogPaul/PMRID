@@ -6,7 +6,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 import utilTrain
-from utilTrain import TrainParam, TrainState
+from utilTrain import ROOT, TrainParam, TrainState
 
 import torch
 import torch.optim as optim
@@ -19,9 +19,6 @@ from data.RawDataset import DumpBgr888
 from data.RawDatasetTimBrooks import RawDatasetTimBrooks, create_dataloader
 from benchmark import BenchmarkLoader
 # from run_benchmark import Denoiser, KSigma, Official_Ksigma_params
-
-from models.net_torch_noahtcv_group import NOAHTCVgroup, NOAHTCVgroup_Level3
-from models.net_torch_Golden4T import Golden4T
 
 import time
 import numpy as np
@@ -43,8 +40,7 @@ torch.backends.cudnn.benchmark = False   # 关闭自动调优
 def train(sModelName, sPathTrainParamYml, Network):
     tpm = TrainParam(sPathTrainParamYml) # TrainParaM
 
-    myState = TrainState(sModelName, tpm)
-    myState.model = Network().to(tpm.device)
+    myState = TrainState(sModelName, model = Network, tpm = tpm)
     myState.optimizer = optim.Adam(myState.model.parameters(), lr=tpm.lr, weight_decay=1e-5)
     criterion = torch.nn.L1Loss()
 
@@ -74,8 +70,8 @@ def train(sModelName, sPathTrainParamYml, Network):
                 break
 
             # ----- adjust lr ---- #
-            myState.lr = lr_triangle(myState.step, epochMax = tpm.num_step, lrMax = tpm.lr)
-            # current_lr = tpm.lr
+            # myState.lr = lr_triangle(myState.step, epochMax = tpm.num_step, lrMax = tpm.lr)
+            myState.lr = tpm.lr
             for param_group in myState.optimizer.param_groups:
                 param_group['lr'] = myState.lr
 
@@ -94,12 +90,14 @@ def train(sModelName, sPathTrainParamYml, Network):
                 DumpBgr888(dataset, BChHW_noisy[0], meta_datas[0], myState.step, "Noisy0", tpm.folderDumpPred)
                 DumpBgr888(dataset, BChHW_gt[0], meta_datas[0], myState.step, "GT0", tpm.folderDumpPred)
                 DumpBgr888(dataset, BChHW_pred[0], meta_datas[0], myState.step, "Pred0", tpm.folderDumpPred)
+                DumpBgr888(dataset, BChHW_var[0], meta_datas[0], myState.step, "NoiseStd", tpm.folderDumpPred)
 
             # ----- dump several image ----- #
             if nDump1st > 0: # save the first nSaveRemain train image
                 DumpBgr888(dataset, BChHW_noisy[0], meta_datas[0], batch_idx, "Noisy0", tpm.folderDump1stImg)
                 DumpBgr888(dataset, BChHW_gt[0], meta_datas[0], batch_idx, "GT0", tpm.folderDump1stImg)
                 DumpBgr888(dataset, BChHW_pred[0], meta_datas[0], batch_idx, "Pred0", tpm.folderDump1stImg)
+                DumpBgr888(dataset, BChHW_var[0], meta_datas[0], myState.step, "NoiseStd", tpm.folderDumpPred)
                 nDump1st -= 1
 
             myState.nextBatch()
@@ -107,10 +105,12 @@ def train(sModelName, sPathTrainParamYml, Network):
 if __name__ == '__main__':
     sTrainFolder = "D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/runs/models"
 
-    # sModelName, sTrainParamYml, Network = "Golden4T", "TrainArg.yaml", Golden4T
-    sModelName, sTrainParamYml, Network = "NOAHgroupLevel3", "TrainArg.yaml", NOAHTCVgroup_Level3
-
-    sPathTrainParamYml = os.path.join(sTrainFolder, sModelName, sTrainParamYml)
+    sModelName, sTrainParamYml = "NOAHgroupL3jpg", "TrainArg.yaml"
+    sModelFolder, sPathTrainParamYml = os.path.join(sTrainFolder, sModelName), os.path.join(sTrainFolder, sModelName, sTrainParamYml)
+    if str(sModelFolder) not in sys.path:
+        sys.path.append(str(sModelFolder))
+    from net_torch_noahtcv_group import NOAHTCVgroup_Level3 as Network
+    
     train(sModelName, sPathTrainParamYml, Network)
 
     # # ----- using BenchMark as test load ----- #
