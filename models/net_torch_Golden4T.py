@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import sys, os
-curFolder = Path(__file__).resolve().parents[0]
-if str(curFolder) not in sys.path:
-    sys.path.append(str(curFolder))
-
-import utilModels
 
 import numpy as np
 import torch
