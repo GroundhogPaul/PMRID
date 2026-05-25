@@ -181,7 +181,6 @@ def DenoiserConcat(noisy_bayerRGGB, net, SensorGain, sFolderNoiseParam):
     varRead, stdShot = interpolate_gain_var_folder(sFolderNoiseParam, SensorGain)
 
     # ----- cal var and concat ----- #
-    varRead *= 2
     print("stdShot = ", stdShot, ", varRead = ", varRead)
     noisy_rggb = torch.clamp(noisy_rggb, 0, 1)
     var_rggb = torch.sqrt(noisy_rggb * stdShot + varRead).to(torch.float32)
