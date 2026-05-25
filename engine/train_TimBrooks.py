@@ -102,6 +102,9 @@ def train(sModelName, sPathTrainParamYml, Network):
 
             myState.nextBatch()
 
+        if myState.step >= tpm.num_step:
+            break
+
 if __name__ == '__main__':
     sTrainFolder = "D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/runs/models"
 
