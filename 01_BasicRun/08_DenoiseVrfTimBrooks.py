@@ -30,7 +30,8 @@ if __name__ == '__main__':
 
     # ---------- read vrf ---------- #
     # ----- case 1: single img ----- #
-    sVrfPath, sVrfOutName = r"D:\image_database\jn1_mfnr_bestshot\unpacked\33\5_unpacked.vrf", "Lark033"
+    # sVrfPath, sVrfOutName, sFolderNoiseParam = r"D:\image_database\jn1_mfnr_bestshot\unpacked\33\5_unpacked.vrf", "Lark033", r"D:\users\xiaoyaopan\PxyAI\DataSet\SensorParam\jn1\NoiseParam"
+    sVrfPath, sVrfOutName, sFolderNoiseParam = r"D:\image_database\LarkPro\realworld_Unpack\scene135\rear_primary_sensor_0.vrf", "LarkPro135", r"D:\users\xiaoyaopan\PxyAI\DataSet\SensorParam\imx682\NoiseParamInterp"
     sVrfCpyName = sVrfOutName + "_noisy.vrf"
     assert os.path.exists(sVrfPath), f"Input vrf doesn't exist: {sVrfPath}"
 
@@ -66,7 +67,7 @@ if __name__ == '__main__':
     # # -----denoise and save ----- #
     sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
     DenoiserVrf(sVrfPath, sVrfOutPath, 
-                sFolderNoiseParam = r"D:\users\xiaoyaopan\PxyAI\DataSet\SensorParam\jn1\NoiseParam", 
+                sFolderNoiseParam = sFolderNoiseParam, 
                 model = myState.model, 
                 mode = "Concat")
 
