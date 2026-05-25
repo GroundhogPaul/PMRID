@@ -2,13 +2,10 @@ import utilBasicRun
 
 import numpy as np
 import skimage
-import os
+import os, sys
 import cv2
 import re
-from RawContainer.utilRaw import RawUtils
-from RawContainer.utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image, CFAPatternEnum, FlipBayerPattern2Pattern
-from models.net_torch_noahtcv_group import NOAHTCVgroup_Level3 as Network
-from engine.utilTrain import TrainState, DenoiserConcat, DenoiserVrf
+from engine.utilTrain import TrainState, DenoiserVrf
 import torch
 import shutil
 import glob
@@ -16,9 +13,12 @@ import glob
 if __name__ == '__main__':
     # ---------- read model ---------- #
     # ----- assert ckpt paths ----- #
-    # model_path, model_name =  "runs/models/NOAHgroupL3/DumpCkpt/023400_L0.0089.ckpt", "NOAHgroupL3"
-    model_path, model_name =  "runs/models/NOAHgroupL3vrf/DumpCkpt/041400_L0.0016.ckpt", "NOAHgroupL3"
+    model_path, model_name =  "runs/models/NOAHgroupL3jpg/DumpCkpt/199800_L0.0059.ckpt", "NOAHgroupL3"
     assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
+    model_work_path = os.path.abspath(os.path.dirname(os.path.dirname(model_path)))
+    if model_work_path not in sys.path:
+        sys.path.append(model_work_path)
+    from net_torch_noahtcv_group import NOAHTCVgroup_Level3 as Network
 
     myState = TrainState(sModelName=model_name, model=Network, tpm=None)
     myState.LoadModelFromPath(model_path, device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu'))
@@ -29,19 +29,12 @@ if __name__ == '__main__':
     os.makedirs(sOut_folder, exist_ok=True)
 
     # ---------- read vrf ---------- #
-    # ----- case 1: 1~64 img ----- #
-    sFolder = r"D:\image_database\jn1_mfnr_bestshot\unpacked"
-    assert os.path.exists(sFolder), f"Data folder does not exist: {sFolder}"
-    idxVrf = 33
-    vrf_files = glob.glob(os.path.join(sFolder, f"{idxVrf}/*.vrf"))
-    assert len(vrf_files) > 0, f"VRF file does not exist in folder: {os.path.join(sFolder, str(idxVrf))}"
-    assert len(vrf_files) == 1, f"Multiple VRF files found in folder: {os.path.join(sFolder, str(idxVrf))}"
-    sVrfPath = os.path.join(sFolder, vrf_files[0])
+    # ----- case 1: single img ----- #
+    sVrfPath, sVrfOutName = r"D:\image_database\jn1_mfnr_bestshot\unpacked\33\5_unpacked.vrf", "Lark033"
+    sVrfCpyName = sVrfOutName + "_noisy.vrf"
+    assert os.path.exists(sVrfPath), f"Input vrf doesn't exist: {sVrfPath}"
 
-    sVrfCpyName = f"{idxVrf:02d}_noisy.vrf"
-    sVrfCpyPath =  os.path.join(sOut_folder, sVrfCpyName)
-    
-    sVrfOutName = f"{idxVrf:02d}_{myState.sModelName}_{myState.batch_idx_total}.vrf"
+    sVrfOutName = sVrfOutName + f"_{myState.sModelName}_{myState.batch_idx_total}.vrf"
 
     # ---------- Case2: Denoise 'add noise to golden 4T output' ---------- #
     # sFolder = r"D:\users\xiaoyaopan\PxyAI\PMRID_OFFICIAL\PMRID"

@@ -66,7 +66,8 @@ class TrainState:
         self.tpm = tpm
         self.sModelName = sModelName
         self.model = model()
-        self.model.to(tpm.device)
+        if tpm is not None:
+            self.model.to(tpm.device)
         self.optimizer = None
 
         self.lr = -1 # current lr
@@ -124,7 +125,7 @@ class TrainState:
         assert os.path.exists(path_ckpt), f"Model file does not exist: {path_ckpt}"
         ckpt = torch.load(path_ckpt, weights_only=False)
         self.model.load_CKPT(sCKPT = path_ckpt, device=device)
-        if self.eval:
+        if not self.eval:
             self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
 
         self.lr = ckpt['lr']
@@ -180,6 +181,7 @@ def DenoiserConcat(noisy_bayerRGGB, net, SensorGain, sFolderNoiseParam):
     varRead, stdShot = interpolate_gain_var_folder(sFolderNoiseParam, SensorGain)
 
     # ----- cal var and concat ----- #
+    varRead *= 2
     print("stdShot = ", stdShot, ", varRead = ", varRead)
     noisy_rggb = torch.clamp(noisy_rggb, 0, 1)
     var_rggb = torch.sqrt(noisy_rggb * stdShot + varRead).to(torch.float32)
@@ -187,8 +189,6 @@ def DenoiserConcat(noisy_bayerRGGB, net, SensorGain, sFolderNoiseParam):
     # --------- forward --------- #
     pred_rggb = net(noisy_rggb, var_rggb)[0].detach()  # [B,4,H,W]
     pred_rggb = torch.clamp(pred_rggb, 0, 1)
-    # print(torch.min(noisy_rggb), torch.max(noisy_rggb), torch.mean(noisy_rggb))
-    # print(torch.min(pred_rggb), torch.max(pred_rggb), torch.mean(pred_rggb))
 
     # ----- depad ----- #
     pred_rggb = pred_rggb[:, :H, :W]
@@ -202,15 +202,14 @@ def DenoiserVrf(sVrfPath, sVrfOutPath, sFolderNoiseParam, model, mode):
     vrfCur = vrf(sVrfPath)
     ISO = vrfCur.m_ISO
     SensorGain = vrfCur.m_nSensorGain
-    print(f"Using ISO: {ISO}, SensorGain: {SensorGain}")
 
     black_level = vrfCur.m_BlackLevel
     white_level = vrfCur.m_WhiteLevel 
-    blc01 = float(black_level) / white_level
+    black_level = black_level - 6
+    print(f"Using ISO={ISO}, SensorGain={SensorGain}, wlc={white_level}, blc={black_level}")
     dgain = 1.0
 
     # ----- read vrf ----- #
-    # bayer01_GRBG_noisy = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level)
     noisy_bayerGRBG = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level, bClipBlc=True)
     noisy_bayerRGGB = np.fliplr(noisy_bayerGRBG)
     device = next(model.parameters()).device
