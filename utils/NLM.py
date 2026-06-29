@@ -1,14 +1,19 @@
+import sys
+import os
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
 import utilUtil
 import numpy as np
 import cv2
-import os
 import math
 import torch
 import torch.nn.functional as F
 from copy import deepcopy
 import time
 
-from utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image, CFAPatternEnum, FlipBayerPattern2Pattern
+from RawContainer.utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image, CFAPatternEnum, FlipBayerPattern2Pattern
 
 wSearchWin = 17
 wCenterLuma = 5
@@ -106,13 +111,14 @@ if __name__ == "__main__":
 
     # ---------- get vrf ---------- #
     sVrfPath = "D:/image_database/jn1_mfnr_bestshot/unpacked/33/5_unpacked.vrf"
-    # sVrfPath = "./testIn.vrf"
-    # sVrfPath = "./4K.vrf"
-    # sVrfPath = "./1_AI_Denoise.vrf"
     assert os.path.exists(sVrfPath), f"sVrfPath does not exist: {sVrfPath}"
 
     vrfCur = vrf(sVrfPath)
     bayer_noisy = vrfCur.get_raw_image()
+    vrfCur.m_W = 512*2
+    vrfCur.m_H = 512*2
+    vrfCur.m_raw = bayer_noisy[512:vrfCur.m_H+512, 512:vrfCur.m_W+512]
+    vrfCur.save_vrf("./512x512.vrf")
 
     # ---------- flip and to torch --------- #
     bayer_RGGB_noisy = FlipBayerPattern2Pattern(bayer_noisy, vrfCur.m_CFAPatternNum, CFAPatternEnum.RGGB)
@@ -121,7 +127,7 @@ if __name__ == "__main__":
     device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
     bayer_RGGB_noisy = bayer_RGGB_noisy.to(device)
 
-    for iFrame in range(1):
+    for iFrame in range(100):
 
         start_time = time.time()
         bayer_out = NLM_rggb_withPad(bayer_RGGB_noisy)
