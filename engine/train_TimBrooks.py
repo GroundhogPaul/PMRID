@@ -41,7 +41,7 @@ def train(sModelName, sPathTrainParamYml, Network):
     tpm = TrainParam(sPathTrainParamYml) # TrainParaM
 
     myState = TrainState(sModelName, model = Network, tpm = tpm)
-    myState.optimizer = optim.Adam(myState.model.parameters(), lr=tpm.lr, weight_decay=1e-5)
+    myState.optimizer = optim.Adam(myState.model.parameters(), lr=tpm.lr)
     criterion = torch.nn.L1Loss()
 
     if "jpg" in tpm.train_pattern[0]:
@@ -108,7 +108,7 @@ def train(sModelName, sPathTrainParamYml, Network):
 if __name__ == '__main__':
     sTrainFolder = "D:/users/xiaoyaopan/PxyAI/PMRID_OFFICIAL/PMRID/runs/models"
 
-    sModelName, sTrainParamYml = "NOAHgroupL3jpg", "TrainArg.yaml"
+    sModelName, sTrainParamYml = "NOAHgroupL3jpg_NoWeightDecay", "TrainArg.yaml"
     sModelFolder, sPathTrainParamYml = os.path.join(sTrainFolder, sModelName), os.path.join(sTrainFolder, sModelName, sTrainParamYml)
     if str(sModelFolder) not in sys.path:
         sys.path.append(str(sModelFolder))
