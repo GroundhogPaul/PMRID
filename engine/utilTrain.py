@@ -202,9 +202,8 @@ def DenoiserVrf(sVrfPath, sVrfOutPath, sFolderNoiseParam, model, mode):
     ISO = vrfCur.m_ISO
     SensorGain = vrfCur.m_nSensorGain
 
-    black_level = vrfCur.m_BlackLevel
-    white_level = vrfCur.m_WhiteLevel 
-    black_level = black_level - 6
+    black_level = vrfCur.m_BlackLevel - 6
+    white_level = vrfCur.m_WhiteLevel
     print(f"Using ISO={ISO}, SensorGain={SensorGain}, wlc={white_level}, blc={black_level}")
     dgain = 1.0
 
