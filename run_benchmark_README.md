@@ -28,13 +28,9 @@ raw图训练应该遵循一样的方法，除了在步骤a之前还要加上噪�
 
 而加噪声这一步应该就在上一段的a和b之间
 
-
-
 # bayer转rgb对PSNR的影响
 
 根据 run_benchmark.py的测试，bayer的PSNR统一都比RGB高。这一结论也符合文章 Unprocessing Images for Learned Raw Denoising 中，table 1 的结果。
-
-
 
 通过控制变量，发现，wb_gain， CCM和gamma都会拉低rgb域的PSNR水平
 
@@ -45,11 +41,3 @@ raw图训练应该遵循一样的方法，除了在步骤a之前还要加上噪�
 2. CCM：三通道的噪声互相影响了
 
 3. gamma：给三通道都乘以了>1.0的数，原理同1. wb_gain
-
-
-
-
-
-
-
-
