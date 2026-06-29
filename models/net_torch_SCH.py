@@ -72,5 +72,5 @@ if __name__ == "__main__":
     # summary(net, input_size=(1, 8, 64, 64))
     flops, params = profile(net, inputs=([img, img]))
     gflops = flops/1e9
-    imgSizeM = img.shape[2]*img.shape[3]*4/1e6
+    imgSizeM = img.shape[1]*img.shape[2]*img.shape[3]/1e6
     print(f"FLOPs: {gflops:.2f}G, Params: {params/1e6:.2f}M, gFlops per 1M pixel = {gflops/imgSizeM:.2f}G")
