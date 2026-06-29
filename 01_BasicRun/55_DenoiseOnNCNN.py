@@ -10,10 +10,6 @@ from run_benchmark import Denoiser
 from utils.KSigma import KSigma, Official_Ksigma_params 
 from utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image, CFAPatternEnum, FlipBayerPattern2Pattern
 
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True, max_split_size_mb:128'
-import torch
-print(f"PYTORCH_CUDA_ALLOC_CONF: {os.environ.get('PYTORCH_CUDA_ALLOC_CONF', 'Not set')}")
-torch.cuda.empty_cache()
 import ncnn
 
 def test_inference(model_param_path, model_bin_path, BChHW01_RGGB_noisy_k):
