@@ -7,9 +7,10 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 import utilBasic
-from RawContainer.utilVrf import vrf, read_vrf, save_vrf_image, save_raw_image, CFAPatternEnum, FlipBayerPattern2Pattern
+from RawContainer.utilVrf import vrf, read_vrf, read_vrf_01, save_vrf_image, save_raw_image, CFAPatternEnum, FlipBayerPattern2Pattern
 from RawContainer.utilRaw import RawUtils
 from SensorNoise.UtilSensorNoise import interpolate_gain_var_folder
+from SensorNoise.ModelGaussGauss import AiRawDnsParam
 
 import numpy as np
 import torch
@@ -165,7 +166,7 @@ class TrainState:
         self.batch_idx_total += 1
 
 # ---------- Denoise ---------- #
-def DenoiserConcat(noisy_bayerRGGB, net, SensorGain, sFolderNoiseParam):
+def DenoiserConcat(noisy_bayerRGGB, net, AGain, mySensorNoise):
     assert isinstance(noisy_bayerRGGB, torch.Tensor), f"Input must be a pytorch tensor, current type: {type(noisy_bayerRGGB)}"
 
     # ----- padd to 32 multiple ----- #
@@ -177,16 +178,16 @@ def DenoiserConcat(noisy_bayerRGGB, net, SensorGain, sFolderNoiseParam):
     pad_w = (32 - W % 32) % 32
     noisy_rggb = torch.nn.functional.pad(noisy_rggb, (0, pad_w, 0, pad_h), mode='constant', value = 0)
 
-    # ----- Get Sigma: LW method ----- #
-    varRead, stdShot = interpolate_gain_var_folder(sFolderNoiseParam, SensorGain)
+    varRead = mySensorNoise.GetReadNoise(AGain)
+    stdShot = mySensorNoise.GetShotNoise(AGain)
 
     # ----- cal var and concat ----- #
-    print("stdShot = ", stdShot, ", varRead = ", varRead)
     noisy_rggb = torch.clamp(noisy_rggb, 0, 1)
     var_rggb = torch.sqrt(noisy_rggb * stdShot + varRead).to(torch.float32)
 
     # --------- forward --------- #
     pred_rggb = net(noisy_rggb, var_rggb)[0].detach()  # [B,4,H,W]
+    # ----- Get Sigma: LW method ----- #
     pred_rggb = torch.clamp(pred_rggb, 0, 1)
 
     # ----- depad ----- #
@@ -195,35 +196,62 @@ def DenoiserConcat(noisy_bayerRGGB, net, SensorGain, sFolderNoiseParam):
 
     return pred_bayerRGGB
 
-def DenoiserVrf(sVrfPath, sVrfOutPath, sFolderNoiseParam, model, mode):
+def DenoiserVrf(sVrfPath, sVrfOutPath, sSettingFile, model, mode):
+    sFilterName = "CAiRawDns"
     assert mode == "Concat" or mode == "KSigma", f"Unsupported mode: {mode}. Supported modes are 'Concat' and 'KSigma'."
     # ----- read vrf info ----- #
     vrfCur = vrf(sVrfPath)
-    ISO = vrfCur.m_ISO
-    SensorGain = vrfCur.m_nSensorGain
+    # ----- cal parameter ----- 
+    bitDepthIn, bitDepthOut = vrfCur.m_bitDepth, 12
+    assert bitDepthOut >= bitDepthIn, "you don't want to lose bit depth"
+    out_ratio = 2**(bitDepthOut - bitDepthIn)
 
-    black_level = vrfCur.m_BlackLevel - 6
-    white_level = vrfCur.m_WhiteLevel
-    print(f"Using ISO={ISO}, SensorGain={SensorGain}, wlc={white_level}, blc={black_level}")
-    dgain = 1.0
+    ISO = vrfCur.m_ISO
+    AGain = vrfCur.m_nSensorGain
+
+    mySensorNoise = AiRawDnsParam()
+    mySensorNoise.LoadFromSettingFile(sSettingFile)
+    ReadNoise = mySensorNoise.GetReadNoise(AGain)
+    ShotNoise = mySensorNoise.GetShotNoise(AGain)
+    print(f"{sFilterName}: ISO_={ISO}, m_A_ReadVar={mySensorNoise.m_A_ReadVar:0.8f}, ReadNoise={ReadNoise:0.8f}, ShotNoise={ShotNoise:0.8f}")
+
+    blc_in = mySensorNoise.GetBlcUsed(AGain, vrfCur.m_bitDepth)
+    wlc_in = vrfCur.m_WhiteLevel
+    blc_out = mySensorNoise.GetBlcUsed(AGain, bitDepthOut)
+    wlc_out = (wlc_in + 1) * out_ratio - 1
+    addBackPercent = mySensorNoise.GetAddBackUsed(AGain)
+    WeightTotal = 100
+    WeightOld = addBackPercent * out_ratio
+    WeightNew = WeightTotal - addBackPercent
+    print(f"{sFilterName}: SettingFile used:{sSettingFile}")
+    print(f"    bitDepthIn={bitDepthIn}, bitDepthOut={bitDepthOut}")
+    print(f"    WhiteLvlIn={wlc_in}, WhiteLvlOut={wlc_out}")
+    print(f"    BlackLvlIn={blc_in}, BlackLvlOut={blc_out}")
+    print(f"    WeightOld={WeightOld}, WeightNew={WeightNew}")
+    print(f"    addBackPercent={addBackPercent}")
 
     # ----- read vrf ----- #
-    noisy_bayerGRBG = read_vrf(sVrfPath, vrfCur.m_W, vrfCur.m_H, black_level, dgain, white_level, bClipBlc=True)
-    noisy_bayerRGGB = np.fliplr(noisy_bayerGRBG)
+    dgain = 1.0
+    noisy_bayerGRBG_01 = read_vrf_01(sVrfPath, vrfCur.m_W, vrfCur.m_H, blc_in, dgain, wlc_in, bClipBlc=True)
+    noisy_bayerRGGB_01 = np.fliplr(noisy_bayerGRBG_01)
+
     device = next(model.parameters()).device
-    noisy_bayerRGGB = torch.from_numpy(np.ascontiguousarray(noisy_bayerRGGB)).to(device)
+    noisy_bayerRGGB_01 = torch.from_numpy(np.ascontiguousarray(noisy_bayerRGGB_01)).to(device)
     if mode == "Concat":
-        pred_bayerRGGB = DenoiserConcat(noisy_bayerRGGB, model, SensorGain, sFolderNoiseParam)
+        pred_bayerRGGB_01 = DenoiserConcat(noisy_bayerRGGB_01, model, AGain, mySensorNoise)
     if mode == "KSigma":
-        pred_bayerRGGB = DenoiserKSigma(noisy_bayerRGGB, model, SensorGain, sFolderNoiseParam)
+        pred_bayerRGGB_01 = DenoiserKSigma(noisy_bayerRGGB_01, model, AGain, mySensorNoise)
 
     # # ----- save vrf ----- #
     out_ratio = 4  #out 12bit
-    out_black_level = black_level * out_ratio  # 根据实际情况调整
-    out_white_level = (white_level + 1) * out_ratio - 1
-    pred_bayerGRBG = np.fliplr(pred_bayerRGGB)
-    # bayer01_GRBG_denoise = np.clip(bayer01_GRBG_denoise, 0, 1)
-    denoised_image = save_raw_image(pred_bayerGRBG, sVrfOutPath.replace(".vrf", ".raw"), out_white_level, out_black_level)
-    save_vrf_image(denoised_image, sVrfPath, sVrfOutPath, out_white_level)
+    out_black_level = blc_in * out_ratio  # 根据实际情况调整
+    out_white_level = (wlc_in + 1) * out_ratio - 1
+    pred_bayerGRBG_01 = np.fliplr(pred_bayerRGGB_01)
+    # denoised_image = save_raw_image(pred_bayerGRBG_01, sVrfOutPath.replace(".vrf", ".raw"), out_white_level, out_black_level)
+    # save_vrf_image(denoised_image, sVrfPath, sVrfOutPath, out_white_level)
+    pred_bayerGRBG_addback = (pred_bayerGRBG_01 * WeightNew + noisy_bayerGRBG_01 * WeightOld) / WeightTotal
+    denoised_image_addback = save_raw_image(pred_bayerGRBG_addback, sVrfOutPath.replace(".vrf", ".raw"), out_white_level, out_black_level)
+    # save_vrf_image(denoised_image, sVrfPath, sVrfOutPath, out_white_level)
+    save_vrf_image(denoised_image_addback, sVrfPath, sVrfOutPath, wlc_out)
 
     return

@@ -13,15 +13,15 @@ import glob
 if __name__ == '__main__':
     # ---------- read model ---------- #
     # ----- assert ckpt paths ----- #
-    model_path, model_name =  "runs/models/NOAHgroupL3jpg/DumpCkpt/199800_L0.0059.ckpt", "NOAHgroupL3"
+    model_path, model_name =  "./runs/models/NOAH_L3_L0ch16_res_x2_Five5k/DumpCkpt/top_model_psnr_45.47_step_4900000.pth", "NOAH_L3_L0ch16_res_x2"
     assert os.path.exists(model_path), f"Model file does not exist: {model_path}"
     model_work_path = os.path.abspath(os.path.dirname(os.path.dirname(model_path)))
     if model_work_path not in sys.path:
         sys.path.append(model_work_path)
-    from net_torch_noahtcv_group import NOAHTCVgroup_Level3 as Network
+    from net_torch_noahtcv_SCH import NOAH_L3_L0ch16_res_x2 as Network
 
     myState = TrainState(sModelName=model_name, model=Network, tpm=None)
-    myState.LoadModelFromPath(model_path, device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu'))
+    myState.LoadModelFromPath(model_path, device=torch.device('cuda:1' if torch.cuda.is_available() else 'cpu'))
 
     # ----- output folder ----- #
     sModel_folder = os.path.dirname(os.path.dirname(model_path))
@@ -30,8 +30,10 @@ if __name__ == '__main__':
 
     # ---------- read vrf ---------- #
     # ----- case 1: single img ----- #
-    # sVrfPath, sVrfOutName, sFolderNoiseParam = r"D:\image_database\jn1_mfnr_bestshot\unpacked\33\5_unpacked.vrf", "Lark033", r"D:\users\xiaoyaopan\PxyAI\DataSet\SensorParam\jn1\NoiseParam"
-    sVrfPath, sVrfOutName, sFolderNoiseParam = r"D:\image_database\LarkPro\realworld_Unpack\scene135\rear_primary_sensor_0.vrf", "LarkPro135", r"D:\users\xiaoyaopan\PxyAI\DataSet\SensorParam\imx682\NoiseParamInterp"
+    sVrfPath, sVrfOutName, sSettingFile = r"D:\image_database\jn1_mfnr_bestshot\unpacked\33\5_unpacked.vrf", "Lark033", r"D:\users\xiaoyaopan\PxyAI\DataSet\SensorParam\imx682_asr\AiRawDns_imx682_058_90.setting"
+    # sVrfPath, sVrfOutName, sFolderNoiseParam = r"D:\image_database\LarkPro\realworld_Unpack\scene135\rear_primary_sensor_0.vrf", "LarkPro135", r"D:\users\xiaoyaopan\PxyAI\DataSet\SensorParam\imx682_asr\NoiseParamInterp"
+    # sVrfPath, sVrfOutName, sFolderNoiseParam = r"D:\users\xiaoyaopan\PxyAI\DataSet\AiRawDns\dump20260707imx219\77536_1_AiRawDns_Input.vrf", "77536_1", r"D:\users\xiaoyaopan\PxyAI\DataSet\SensorParam\imx219_asr\NoiseParamInterp"
+    # sVrfPath, sVrfOutName, sFolderNoiseParam = r"D:\users\xiaoyaopan\PxyAI\DataSet\AiRawDns\HardScene\imx682_ColorChecker_F0_A64_unpack.vrf", "Dark_0", r"D:\users\xiaoyaopan\PxyAI\DataSet\SensorParam\imx682_asr\NoiseParamInterp"
     sVrfCpyName = sVrfOutName + "_noisy.vrf"
     assert os.path.exists(sVrfPath), f"Input vrf doesn't exist: {sVrfPath}"
 
@@ -67,8 +69,8 @@ if __name__ == '__main__':
     # # -----denoise and save ----- #
     sVrfOutPath =  os.path.join(sOut_folder, sVrfOutName)
     DenoiserVrf(sVrfPath, sVrfOutPath, 
-                sFolderNoiseParam = sFolderNoiseParam, 
+                sSettingFile = sSettingFile, 
                 model = myState.model, 
                 mode = "Concat")
 
-    print("sVrfOutPath = ", sVrfOutPath)
+print("done")
